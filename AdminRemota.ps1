@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.1 (GUI)
+    Herramienta de administracion remota unificada v2.2 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.1
+    2.2
 #>
 
 [CmdletBinding()]
@@ -789,55 +789,94 @@ function Invoke-SystemInfo {
 function Invoke-UsbDriverClean {
     param([Parameter(Mandatory)][string]$ComputerName)
 
-    # ── Fase A: Deteccion ────────────────────────────────────────────
-    Write-Info "Buscando drivers USB en '$ComputerName'..."
+    # ── Fase A: Eleccion de modo ─────────────────────────────────────
     Write-Sep
+    Write-Info "Borrado de drivers USB en '$ComputerName'"
+    Write-Sep
+    Append-Output "" $script:White
 
-    $drivers    = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-        Get-PnpDevice | Where-Object {
-            $_.FriendlyName -match "USB" -and $_.Class -match "USB"
-        } | Sort-Object Class, FriendlyName |
-            Select-Object Status, Class, FriendlyName, InstanceId
+    $modeChoice = [System.Windows.Forms.MessageBox]::Show(
+        "¿Qué drivers USB desea eliminar en '$ComputerName'?`n`n" +
+        "  [Sí]         Solo drivers fantasma (desconectados / no presentes)`n" +
+        "  [No]         Todos los drivers USB (presentes y no presentes)`n" +
+        "  [Cancelar]   Salir sin hacer nada",
+        "Modo de borrado USB",
+        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+
+    if ($modeChoice -eq [System.Windows.Forms.DialogResult]::Cancel) {
+        Write-Warn "Operacion cancelada por el usuario."
+        return
     }
+
+    $soloFantasmas = ($modeChoice -eq [System.Windows.Forms.DialogResult]::Yes)
+    $modoTexto     = if ($soloFantasmas) { "Solo fantasmas (desconectados)" } else { "Todos los drivers USB" }
+
+    Write-Info "Modo seleccionado: $modoTexto"
+    Append-Output "" $script:White
+
+    # ── Fase B: Deteccion ────────────────────────────────────────────
+    Write-Info "Buscando drivers candidatos en '$ComputerName'..."
+
+    $drivers = Invoke-Command -ComputerName $ComputerName -ArgumentList $soloFantasmas -ScriptBlock {
+        param([bool]$onlyGhost)
+        # -PresentOnly $false es necesario para ver dispositivos no conectados (fantasmas)
+        $all = Get-PnpDevice -PresentOnly $false
+        if ($onlyGhost) {
+            # Fantasmas: dispositivos USB no presentes (Status=Unknown = desconectado)
+            $all = $all | Where-Object { $_.Class -match "USB" -and $_.Status -eq "Unknown" }
+        } else {
+            # Todos: dispositivos USB, presentes o no
+            $all = $all | Where-Object { $_.FriendlyName -match "USB" -and $_.Class -match "USB" }
+        }
+        $all | Sort-Object Class, FriendlyName | Select-Object Status, Class, FriendlyName, InstanceId
+    }
+
     $driverList = @($drivers)
     $total      = $driverList.Count
 
     if ($total -eq 0) {
-        Write-Warn "No se encontraron drivers USB en '$ComputerName'."
+        $noDriverMsg = if ($soloFantasmas) {
+            "No se encontraron drivers USB fantasma en '$ComputerName'."
+        } else {
+            "No se encontraron drivers USB en '$ComputerName'."
+        }
+        Write-Warn $noDriverMsg
         Write-Sep
         return
     }
 
-    Write-Info "Se encontraron $total driver(s) USB candidato(s):"
+    Write-Info "Se encontraron $total driver(s) candidato(s) [$modoTexto]:"
     Append-Output "" $script:White
 
     $idx = 0
     foreach ($d in $driverList) {
         $idx++
         $stateColor = switch ($d.Status) {
-            "OK"      { [System.Drawing.Color]::LightGreen              }
-            "Error"   { [System.Drawing.Color]::Tomato                  }
-            "Unknown" { [System.Drawing.Color]::Gray                    }
-            default   { [System.Drawing.Color]::LightYellow             }
+            "OK"      { [System.Drawing.Color]::LightGreen  }
+            "Error"   { [System.Drawing.Color]::Tomato      }
+            "Unknown" { [System.Drawing.Color]::Gray        }
+            default   { [System.Drawing.Color]::LightYellow }
         }
         Append-Output ("    [{0:D2}] {1,-10}  {2,-26}  {3}" -f $idx, $d.Status, $d.Class, $d.FriendlyName) $stateColor
         Append-Output ("           InstanceId: {0}" -f $d.InstanceId) ([System.Drawing.Color]::FromArgb(120, 120, 120))
     }
     Append-Output "" $script:White
 
-    # ── Fase B: Confirmacion ─────────────────────────────────────────
-    if (-not (Confirm-Action (
-        "Se van a eliminar $total driver(s) USB en '$ComputerName'.`n`n" +
-        "Esta operacion puede requerir reinicio y no es facilmente reversible.`n`n" +
-        "¿Confirmar borrado?"
-    ))) {
+    # ── Fase C: Confirmacion ─────────────────────────────────────────
+    $confirmMsg = "Modo: $modoTexto`n`n" +
+                  "Se van a eliminar $total driver(s) USB en '$ComputerName'.`n`n" +
+                  "Esta operacion puede requerir reinicio y no es facilmente reversible.`n`n" +
+                  "¿Confirmar borrado?"
+    if (-not (Confirm-Action $confirmMsg)) {
         Write-Warn "Borrado cancelado por el usuario. No se ha eliminado nada."
         return
     }
 
-    # ── Fase C: Borrado con progreso visible ─────────────────────────
+    # ── Fase D: Borrado con progreso visible ─────────────────────────
     Write-Sep
-    Write-Info "Iniciando borrado de $total driver(s)..."
+    Write-Info "Iniciando borrado de $total driver(s) [$modoTexto]..."
     Append-Output "" $script:White
 
     $okCount    = 0
@@ -876,13 +915,14 @@ function Invoke-UsbDriverClean {
         }
     }
 
-    # ── Fase D: Resumen final ────────────────────────────────────────
+    # ── Fase E: Resumen final ────────────────────────────────────────
     Append-Output "" $script:White
     Write-Sep
     Write-Info "RESUMEN DE BORRADO USB"
     Write-Sep
-    Append-Output ("  Total encontrados  : {0}" -f $total)      $script:White
-    Append-Output ("  Eliminados OK      : {0}" -f $okCount)    ([System.Drawing.Color]::LightGreen)
+    Append-Output ("  Modo               : {0}" -f $modoTexto)    ([System.Drawing.Color]::Cyan)
+    Append-Output ("  Total candidatos   : {0}" -f $total)        $script:White
+    Append-Output ("  Eliminados OK      : {0}" -f $okCount)      ([System.Drawing.Color]::LightGreen)
     if ($warnCount -gt 0) {
         Append-Output ("  Requieren reinicio : {0}" -f $warnCount) ([System.Drawing.Color]::Yellow)
     }
@@ -897,7 +937,7 @@ function Invoke-UsbDriverClean {
     Write-Sep
     Append-Output "" $script:White
 
-    # Ofrecer reinicio si hubo al menos un borrado (OK o pendiente de reinicio)
+    # Ofrecer reinicio si hubo al menos un borrado exitoso (OK o pendiente)
     $deleted = $okCount + $warnCount
     if ($deleted -gt 0) {
         $reinicioMsg = "Se procesaron correctamente $deleted de $total driver(s)."
@@ -1295,7 +1335,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
