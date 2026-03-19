@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.4.2 (GUI)
+    Herramienta de administracion remota unificada v2.4.3 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.4.2
+    2.4.3
 #>
 
 [CmdletBinding()]
@@ -849,21 +849,40 @@ function Invoke-UsbDriverClean {
                 ($_.FriendlyName -match "USB" -or $_.Class -match "USB") -and $_.Status -eq "Unknown"
             }
         } else {
-            # USB Root Hub: controladores de bus de nivel superior.
-            # pnputil /remove-device sobre un Root Hub intenta desconectar TODOS los hijos
-            # del bus. Si algun hijo esta en uso (p.ej. el adaptador de red que mantiene la
-            # sesion WinRM), la llamada se bloquea indefinidamente sin timeout posible.
-            # Se identifican primero para avisar al usuario y se excluyen del borrado.
-            $excluded = @($all | Where-Object {
-                $_.Class -match "USB" -and $_.FriendlyName -match "Root Hub"
-            } | Sort-Object FriendlyName | Select-Object Status, Class, FriendlyName, InstanceId)
+            # ── Exclusiones obligatorias en modo "todos los USB" ──────────────────
+            # Razon: pnputil /remove-device sobre ciertos dispositivos bloquea la
+            # sesion remota o congela la operacion indefinidamente.
 
-            # Candidatos seguros: USB con FriendlyName y Class = USB, excluidos Root Hubs.
-            # Este filtro es identico al del script de referencia mas la exclusion de Root Hub.
+            # 1) USB Root Hub: controladores de bus de nivel superior.
+            #    Intentar eliminarlos desconecta todos los hijos del bus (incluido
+            #    el adaptador de red que mantiene WinRM) → bloqueo indefinido.
+            # 2) Adaptadores de red USB (Realtek USB, ASIX USB, USB Ethernet, etc.):
+            #    Eliminarlos corta la conexion de red en mitad del Invoke-Command
+            #    → la sesion WinRM colapsa con el job a medias → bloqueo/error.
+            #    El script de referencia los separa explicitamente como "NotSafe".
+            $excluded = @($all | Where-Object {
+                $_.Class -match "USB" -and (
+                    $_.FriendlyName -match "Root Hub" -or
+                    $_.FriendlyName -match "Realtek USB" -or
+                    $_.FriendlyName -match "ASIX USB" -or
+                    $_.FriendlyName -match "USB Ethernet" -or
+                    $_.FriendlyName -match "USB.*Network" -or
+                    $_.FriendlyName -match "USB.*LAN"
+                )
+            } | Sort-Object FriendlyName |
+              Select-Object Status, Class, FriendlyName, InstanceId,
+                @{ N="ExcludeReason"; E={
+                    if ($_.FriendlyName -match "Root Hub") { "Controlador de bus (Root Hub)" }
+                    else { "Posible adaptador de red USB" }
+                }}
+            )
+
+            # Candidatos seguros: USB con ambos criterios activos, sin ninguna exclusion.
+            $excludedNames = @($excluded | ForEach-Object { $_.FriendlyName })
             $all = $all | Where-Object {
                 $_.FriendlyName -match "USB" -and
                 $_.Class        -match "USB" -and
-                $_.FriendlyName -notmatch "Root Hub"
+                $_.FriendlyName -notin $excludedNames
             }
         }
 
@@ -879,9 +898,9 @@ function Invoke-UsbDriverClean {
 
     # Mostrar Root Hubs excluidos (solo en modo todos — no afecta al modo fantasma)
     if (-not $soloFantasmas -and $excludedList.Count -gt 0) {
-        Write-Warn "Excluidos $($excludedList.Count) USB Root Hub (controladores de bus, no se borran):"
+        Write-Warn "Excluidos $($excludedList.Count) dispositivo(s) USB (no seguros para borrar remotamente):"
         foreach ($e in $excludedList) {
-            Append-Output ("    [EXCLUIDO]  {0,-26}  {1}" -f $e.Class, $e.FriendlyName) ([System.Drawing.Color]::FromArgb(180, 80, 0))
+            Append-Output ("    [EXCLUIDO]  {0,-26}  {1,-40}  ({2})" -f $e.Class, $e.FriendlyName, $e.ExcludeReason) ([System.Drawing.Color]::FromArgb(180, 80, 0))
         }
         Append-Output "" $script:White
     }
@@ -951,7 +970,7 @@ function Invoke-UsbDriverClean {
         # Invoke-Command directo no tiene timeout de ejecucion: si pnputil espera la
         # liberacion de un dispositivo bloqueado del stack USB, congela el hilo UI
         # indefinidamente. Start-Job desacopla la ejecucion; Stop-Job la cancela.
-        $job = Start-Job -ArgumentList $ComputerName, $d.InstanceId -ScriptBlock {
+        $job = Start-Job -ArgumentList $ComputerName, ([string]$d.InstanceId) -ScriptBlock {
             param($computer, $instanceId)
             try {
                 $res = Invoke-Command -ComputerName $computer -ArgumentList $instanceId `
@@ -1436,7 +1455,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.4.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.4.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
