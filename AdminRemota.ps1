@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.2 (GUI)
+    Herramienta de administracion remota unificada v2.2.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.2
+    2.2.1
 #>
 
 [CmdletBinding()]
@@ -888,6 +888,10 @@ function Invoke-UsbDriverClean {
     foreach ($d in $driverList) {
         $idx++
         Write-Info ("  [{0}/{1}] Procesando: {2}" -f $idx, $total, $d.FriendlyName)
+        # Fuerza repintado sincrono del RichTextBox antes de que Invoke-Command
+        # bloquee el hilo UI. DoEvents() encola WM_PAINT pero no lo ejecuta
+        # de forma garantizada antes de un bloqueo externo; Update() si lo hace.
+        $script:outputBox.Update()
 
         $rem = Invoke-Command -ComputerName $ComputerName -ArgumentList $d.InstanceId -ScriptBlock {
             param($instanceId)
@@ -1335,7 +1339,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.2.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
