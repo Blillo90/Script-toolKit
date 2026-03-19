@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.4 (GUI)
+    Herramienta de administracion remota unificada v2.4.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.4
+    2.4.1
 #>
 
 [CmdletBinding()]
@@ -832,13 +832,15 @@ function Invoke-UsbDriverClean {
     # ── Fase B: Deteccion ────────────────────────────────────────────
     Write-Info "Buscando drivers candidatos en '$ComputerName'..."
 
-    $drivers = Invoke-Command -ComputerName $ComputerName -ArgumentList $soloFantasmas -ScriptBlock {
+    $remoteData = Invoke-Command -ComputerName $ComputerName -ArgumentList $soloFantasmas -ScriptBlock {
         param([bool]$onlyGhost)
         # Get-PnpDevice SIN parametros devuelve todos los dispositivos (presentes + fantasma).
         # -PresentOnly es el switch que RESTRINGE a solo presentes; sin el, se obtiene todo.
         # NUNCA usar "-PresentOnly $false": SwitchParameter sin ":" activa el switch y pasa
         # $false como argumento posicional, haciendo que Get-PnpDevice devuelva array vacio.
-        $all = Get-PnpDevice
+        $all      = Get-PnpDevice
+        $excluded = @()
+
         if ($onlyGhost) {
             # Fantasmas: Status=Unknown identifica dispositivos ausentes/desconectados.
             # Se busca por FriendlyName O Class para no perder dispositivos USB cuya clase
@@ -847,20 +849,48 @@ function Invoke-UsbDriverClean {
                 ($_.FriendlyName -match "USB" -or $_.Class -match "USB") -and $_.Status -eq "Unknown"
             }
         } else {
-            # Todos los USB: filtro identico al original que si funcionaba
-            $all = $all | Where-Object { $_.FriendlyName -match "USB" -and $_.Class -match "USB" }
+            # USB Root Hub: controladores de bus de nivel superior.
+            # pnputil /remove-device sobre un Root Hub intenta desconectar TODOS los hijos
+            # del bus. Si algun hijo esta en uso (p.ej. el adaptador de red que mantiene la
+            # sesion WinRM), la llamada se bloquea indefinidamente sin timeout posible.
+            # Se identifican primero para avisar al usuario y se excluyen del borrado.
+            $excluded = @($all | Where-Object {
+                $_.Class -match "USB" -and $_.FriendlyName -match "Root Hub"
+            } | Sort-Object FriendlyName | Select-Object Status, Class, FriendlyName, InstanceId)
+
+            # Candidatos seguros: USB con FriendlyName y Class = USB, excluidos Root Hubs.
+            # Este filtro es identico al del script de referencia mas la exclusion de Root Hub.
+            $all = $all | Where-Object {
+                $_.FriendlyName -match "USB" -and
+                $_.Class        -match "USB" -and
+                $_.FriendlyName -notmatch "Root Hub"
+            }
         }
-        $all | Sort-Object Class, FriendlyName | Select-Object Status, Class, FriendlyName, InstanceId
+
+        return @{
+            Candidates = @($all | Sort-Object Class, FriendlyName | Select-Object Status, Class, FriendlyName, InstanceId)
+            Excluded   = $excluded
+        }
     }
 
-    $driverList = @($drivers)
-    $total      = $driverList.Count
+    $driverList   = @($remoteData.Candidates)
+    $excludedList = @($remoteData.Excluded)
+    $total        = $driverList.Count
+
+    # Mostrar Root Hubs excluidos (solo en modo todos — no afecta al modo fantasma)
+    if (-not $soloFantasmas -and $excludedList.Count -gt 0) {
+        Write-Warn "Excluidos $($excludedList.Count) USB Root Hub (controladores de bus, no se borran):"
+        foreach ($e in $excludedList) {
+            Append-Output ("    [EXCLUIDO]  {0,-26}  {1}" -f $e.Class, $e.FriendlyName) ([System.Drawing.Color]::FromArgb(180, 80, 0))
+        }
+        Append-Output "" $script:White
+    }
 
     if ($total -eq 0) {
         $noDriverMsg = if ($soloFantasmas) {
             "No se encontraron drivers USB fantasma en '$ComputerName'."
         } else {
-            "No se encontraron drivers USB en '$ComputerName'."
+            "No se encontraron drivers USB (excluidos Root Hubs) en '$ComputerName'."
         }
         Write-Warn $noDriverMsg
         Write-Sep
@@ -1358,7 +1388,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.4" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.4.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
