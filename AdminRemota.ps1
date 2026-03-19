@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.4.3 (GUI)
+    Herramienta de administracion remota unificada v2.5.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.4.3
+    2.5.0
 #>
 
 [CmdletBinding()]
@@ -272,6 +272,38 @@ $script:SccmCyclesBlock = {
     }
     $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
     return @{ Status=$s; Details=($log -join " | ") }
+}
+
+# ── Espera un job manteniendo la GUI viva via DoEvents ────────────────────────
+# Devuelve $true si el job completo en plazo; $false si timeout (job ya cancelado).
+# Se usa para operaciones del sistema de duracion variable (DISM, SFC, ChkDsk).
+function Wait-JobWithEvents {
+    param(
+        [Parameter(Mandatory)]$Job,
+        [int]$TimeoutMinutes   = 45,
+        [string]$ProgressLabel = "Operacion"
+    )
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    $started  = Get-Date
+    $lastPing = $started
+
+    while ($Job.State -eq 'Running' -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        [System.Windows.Forms.Application]::DoEvents()
+        if (((Get-Date) - $lastPing).TotalSeconds -ge 30) {
+            $elapsed  = [int]((Get-Date) - $started).TotalSeconds
+            Write-Info ("  ... {0} en progreso ({1}s transcurridos)..." -f $ProgressLabel, $elapsed)
+            $script:outputBox.Update()
+            $lastPing = Get-Date
+        }
+    }
+
+    if ($Job.State -eq 'Running') {
+        Stop-Job  $Job
+        Remove-Job $Job -Force
+        return $false
+    }
+    return $true
 }
 
 # ── Inscribe un certificado via certreq + CES Kerberos (3 pasos) ──────────────
@@ -1074,6 +1106,300 @@ function Invoke-UsbDriverClean {
 #endregion
 
 #region ═══════════════════════════════════════════════════════════
+# OPCION 5 - MANTENIMIENTO DEL SISTEMA (DISM / SFC / CHKDSK)
+#═══════════════════════════════════════════════════════════════════
+
+function Invoke-RemoteDism {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    Write-Sep
+    Write-Info "DISM /Online /Cleanup-Image /RestoreHealth en '$ComputerName'"
+    Write-Sep
+    Write-Info "  Tiempo estimado: 5-30 minutos (depende del acceso a Windows Update)."
+    Append-Output "" $script:White
+
+    if (-not (Confirm-Action (
+        "Se va a ejecutar en '$ComputerName':" + "`n`n" +
+        "  DISM /Online /Cleanup-Image /RestoreHealth" + "`n`n" +
+        "  - Puede tardar entre 5 y 30 minutos." + "`n" +
+        "  - Requiere acceso a Windows Update o fuente de reparacion local." + "`n" +
+        "  - No requiere reinicio al finalizar." + "`n`n" +
+        "Continuar?"
+    ))) {
+        Write-Warn "Operacion cancelada por el usuario."
+        return
+    }
+
+    Write-Info "Lanzando DISM en '$ComputerName'..."
+    $script:outputBox.Update()
+
+    $job = Start-Job -ArgumentList $ComputerName -ScriptBlock {
+        param($computer)
+        try {
+            $res = Invoke-Command -ComputerName $computer -ErrorAction SilentlyContinue -ScriptBlock {
+                $out = dism /Online /Cleanup-Image /RestoreHealth 2>&1
+                return @{ Output = ($out -join "`n").Trim(); ExitCode = $LASTEXITCODE }
+            }
+            return $res
+        } catch {
+            return @{ Output = $_.Exception.Message; ExitCode = -1 }
+        }
+    }
+
+    $ok = Wait-JobWithEvents $job -TimeoutMinutes 60 -ProgressLabel "DISM"
+    if (-not $ok) {
+        Write-Fail "DISM TIMEOUT (>60 min). La operacion puede seguir ejecutandose en '$ComputerName'."
+        Write-Warn "  Comprueba el log en: C:\Windows\Logs\DISM\dism.log"
+        Write-Sep; Append-Output "" $script:White
+        return
+    }
+
+    $rem = Receive-Job $job; Remove-Job $job -Force
+
+    if ($null -eq $rem) {
+        Write-Fail "Sin respuesta remota. Verifica la conectividad WinRM con '$ComputerName'."
+        Write-Sep; Append-Output "" $script:White
+        return
+    }
+
+    Write-Sep
+    Write-Info "Salida de DISM:"
+    foreach ($line in ($rem.Output -split "`n" | Where-Object { $_.Trim() -ne "" })) {
+        $l      = $line.Trim()
+        $lColor = if     ($l -match "Error|fallo|FAIL")              { [System.Drawing.Color]::Tomato      }
+                  elseif ($l -match "Warning|Advertencia")           { [System.Drawing.Color]::Yellow      }
+                  elseif ($l -match "completado|correctamente|100\.0%") { [System.Drawing.Color]::LightGreen }
+                  else                                                { $script:Silver                      }
+        Append-Output "    $l" $lColor
+    }
+    Write-Sep
+
+    if ($rem.ExitCode -eq 0) {
+        Write-Ok "DISM completado correctamente. ExitCode=0."
+    } else {
+        Write-Fail "DISM finalizo con ExitCode=$($rem.ExitCode). Revisa: C:\Windows\Logs\DISM\dism.log"
+    }
+    Append-Output "" $script:White
+}
+
+function Invoke-RemoteSfc {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    Write-Sep
+    Write-Info "SFC /scannow en '$ComputerName'"
+    Write-Sep
+    Write-Info "  Tiempo estimado: 5-15 minutos."
+    Append-Output "" $script:White
+
+    if (-not (Confirm-Action (
+        "Se va a ejecutar en '$ComputerName':" + "`n`n" +
+        "  sfc /scannow" + "`n`n" +
+        "  - Verifica la integridad de archivos protegidos del sistema." + "`n" +
+        "  - Puede tardar entre 5 y 15 minutos." + "`n" +
+        "  - Puede requerir reinicio si hay archivos en uso que reparar." + "`n`n" +
+        "Continuar?"
+    ))) {
+        Write-Warn "Operacion cancelada por el usuario."
+        return
+    }
+
+    Write-Info "Lanzando SFC en '$ComputerName'..."
+    $script:outputBox.Update()
+
+    $job = Start-Job -ArgumentList $ComputerName -ScriptBlock {
+        param($computer)
+        try {
+            $res = Invoke-Command -ComputerName $computer -ErrorAction SilentlyContinue -ScriptBlock {
+                # sfc /scannow puede producir salida UTF-16 ilegible en sesion WinRM.
+                # Se captura la salida directa (best-effort) y el tail del log CBS
+                # (ASCII, mas fiable) para dar al usuario informacion util.
+                $out = sfc /scannow 2>&1
+                $cbs = Get-Content "$env:windir\Logs\CBS\CBS.log" -Tail 20 -ErrorAction SilentlyContinue
+                return @{
+                    Output   = ($out -join "`n").Trim()
+                    CbsTail  = if ($cbs) { ($cbs -join "`n").Trim() } else { "" }
+                    ExitCode = $LASTEXITCODE
+                }
+            }
+            return $res
+        } catch {
+            return @{ Output = $_.Exception.Message; CbsTail = ""; ExitCode = -1 }
+        }
+    }
+
+    $ok = Wait-JobWithEvents $job -TimeoutMinutes 30 -ProgressLabel "SFC"
+    if (-not $ok) {
+        Write-Fail "SFC TIMEOUT (>30 min). La operacion puede seguir ejecutandose en '$ComputerName'."
+        Write-Sep; Append-Output "" $script:White
+        return
+    }
+
+    $rem = Receive-Job $job; Remove-Job $job -Force
+
+    if ($null -eq $rem) {
+        Write-Fail "Sin respuesta remota. Verifica la conectividad WinRM con '$ComputerName'."
+        Write-Sep; Append-Output "" $script:White
+        return
+    }
+
+    Write-Sep
+
+    # Salida directa: limpiar caracteres no ASCII (artefactos UTF-16) y mostrar si hay contenido util
+    $sfcOut = ($rem.Output -replace "[^\x20-\x7E\r\n]", "").Trim()
+    if ($sfcOut) {
+        Write-Info "Salida SFC (ultimas lineas):"
+        foreach ($line in ($sfcOut -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 8)) {
+            Append-Output "    $($line.Trim())" $script:Silver
+        }
+    }
+
+    # Log CBS: mas fiable que stdout para el resultado real de SFC
+    if ($rem.CbsTail) {
+        Write-Info "Tail del log CBS (C:\Windows\Logs\CBS\CBS.log):"
+        foreach ($line in ($rem.CbsTail -split "`n" | Where-Object { $_.Trim() })) {
+            $l      = $line.Trim()
+            $lColor = if     ($l -match "error|fail|corrupt")  { [System.Drawing.Color]::Tomato      }
+                      elseif ($l -match "repaired|fixed|reparo") { [System.Drawing.Color]::LightGreen }
+                      else                                      { $script:Silver                      }
+            Append-Output "    $l" $lColor
+        }
+    }
+
+    Write-Sep
+    switch ($rem.ExitCode) {
+        0 { Write-Ok   "SFC completado. ExitCode=0 (sin errores o reparaciones aplicadas correctamente)." }
+        1 { Write-Warn "SFC encontro archivos danados que no pudo reparar. ExitCode=1." }
+        2 { Write-Ok   "SFC realizo limpieza de disco. ExitCode=2." }
+        3 { Write-Warn "SFC no pudo completar el escaneo. Puede requerir reinicio. ExitCode=3." }
+        default { Write-Fail "SFC finalizo con ExitCode=$($rem.ExitCode). Revisa: C:\Windows\Logs\CBS\CBS.log" }
+    }
+    Write-Info "  Log completo en: C:\Windows\Logs\CBS\CBS.log"
+    Append-Output "" $script:White
+}
+
+function Invoke-RemoteChkdsk {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    Write-Sep
+    Write-Info "CHKDSK /r en '$ComputerName'"
+    Write-Sep
+    Write-Info "  En la unidad del sistema (C:) normalmente requiere reinicio para ejecutarse."
+    Write-Info "  En otras unidades puede ejecutarse en caliente si no hay archivos bloqueados."
+    Append-Output "" $script:White
+
+    $driveLetter = Get-Input "Letra de unidad a verificar (solo la letra, p.ej. C)" "ChkDsk - Unidad" "C"
+    if ([string]::IsNullOrWhiteSpace($driveLetter)) {
+        Write-Warn "Operacion cancelada por el usuario."
+        return
+    }
+    $driveLetter = $driveLetter.Trim().TrimEnd(":").ToUpper()
+    if ($driveLetter -notmatch "^[A-Z]$") {
+        Write-Fail "Letra de unidad no valida: '$driveLetter'. Debe ser una sola letra (A-Z)."
+        return
+    }
+
+    $driveTarget   = "${driveLetter}:"
+    $isSystemDrive = ($driveLetter -eq "C")
+    $extraWarning  = if ($isSystemDrive) {
+        "`n`n  IMPORTANTE: '$driveTarget' es probablemente la unidad del sistema." +
+        "`n  ChkDsk no puede bloquearla mientras Windows esta en ejecucion." +
+        "`n  Quedara PROGRAMADO para ejecutarse en el siguiente reinicio."
+    } else { "" }
+
+    if (-not (Confirm-Action (
+        "Se va a ejecutar en '$ComputerName':" + "`n`n" +
+        "  chkdsk $driveTarget /r" + "`n`n" +
+        "  - /r localiza sectores defectuosos y recupera informacion legible." + "`n" +
+        "  - En el volumen del sistema requiere reinicio para ejecutarse." + "`n" +
+        "  - En otras unidades puede tardar varios minutos." +
+        $extraWarning + "`n`n" +
+        "Continuar?"
+    ))) {
+        Write-Warn "Operacion cancelada por el usuario."
+        return
+    }
+
+    Write-Info "Ejecutando chkdsk $driveTarget /r en '$ComputerName'..."
+    $script:outputBox.Update()
+
+    $job = Start-Job -ArgumentList $ComputerName, $driveTarget -ScriptBlock {
+        param($computer, $drive)
+        try {
+            $res = Invoke-Command -ComputerName $computer -ArgumentList $drive -ErrorAction SilentlyContinue -ScriptBlock {
+                param($d)
+                # En la unidad del sistema chkdsk responde de inmediato indicando que se
+                # programara para el siguiente reinicio (no bloquea). En otras unidades
+                # puede tardar (scan de sectores fisicos). /r incluye /f implicito.
+                $out = chkdsk $d /r 2>&1
+                return @{ Output = ($out -join "`n").Trim(); ExitCode = $LASTEXITCODE }
+            }
+            return $res
+        } catch {
+            return @{ Output = $_.Exception.Message; ExitCode = -1 }
+        }
+    }
+
+    $ok = Wait-JobWithEvents $job -TimeoutMinutes 60 -ProgressLabel "ChkDsk $driveTarget"
+    if (-not $ok) {
+        Write-Fail "ChkDsk TIMEOUT (>60 min). La operacion puede seguir en curso en '$ComputerName'."
+        Write-Sep; Append-Output "" $script:White
+        return
+    }
+
+    $rem = Receive-Job $job; Remove-Job $job -Force
+
+    if ($null -eq $rem) {
+        Write-Fail "Sin respuesta remota. Verifica la conectividad WinRM con '$ComputerName'."
+        Write-Sep; Append-Output "" $script:White
+        return
+    }
+
+    Write-Sep
+    Write-Info "Salida de ChkDsk $driveTarget:"
+    foreach ($line in ($rem.Output -split "`n" | Where-Object { $_.Trim() })) {
+        $l      = $line.Trim()
+        $lColor = if     ($l -match "programar|reinicio|reboot|schedule|restart|siguiente")  { [System.Drawing.Color]::Yellow      }
+                  elseif ($l -match "error|danado|corrupt|bad sector")                        { [System.Drawing.Color]::Tomato      }
+                  elseif ($l -match "correcto|completado|sin errores|no errors|Windows comprobado") { [System.Drawing.Color]::LightGreen }
+                  else                                                                         { $script:Silver                      }
+        Append-Output "    $l" $lColor
+    }
+    Write-Sep
+
+    # Detectar caso "programado para reinicio" por contenido de salida.
+    # ExitCode puede ser 0 en este caso, por eso se comprueba la salida primero.
+    $scheduledForReboot = ($rem.Output -match "programar|schedule|reinicio|siguiente arranque|next restart|next boot")
+    if ($scheduledForReboot) {
+        Write-Warn "ChkDsk $driveTarget queda PROGRAMADO para el siguiente reinicio de '$ComputerName'."
+        Write-Warn "  No pudo bloquear el volumen en caliente (comportamiento normal en unidad del sistema)."
+        Write-Info "  ChkDsk se ejecutara automaticamente al arrancar el equipo."
+        Append-Output "" $script:White
+        if (Confirm-Action "ChkDsk $driveTarget esta programado para el reinicio.`n`nReiniciar '$ComputerName' ahora para ejecutarlo?") {
+            try {
+                Restart-Computer -ComputerName $ComputerName -Force -ErrorAction Stop
+                Write-Ok "Orden de reinicio enviada a '$ComputerName'."
+            } catch {
+                Write-Fail "No se pudo reiniciar '$ComputerName': $_"
+            }
+        } else {
+            Write-Info "  Recuerda reiniciar '$ComputerName' para que ChkDsk se ejecute."
+        }
+    } elseif ($rem.ExitCode -eq 0) {
+        Write-Ok "ChkDsk $driveTarget completado correctamente. ExitCode=0."
+    } elseif ($rem.ExitCode -eq 1) {
+        Write-Warn "ChkDsk encontro y corrigio errores en $driveTarget. ExitCode=1."
+        Write-Info "  Puede ser recomendable reiniciar para completar las reparaciones."
+    } elseif ($rem.ExitCode -eq 2) {
+        Write-Warn "ChkDsk realizo limpieza en $driveTarget. ExitCode=2."
+    } else {
+        Write-Fail "ChkDsk $driveTarget finalizo con ExitCode=$($rem.ExitCode)."
+    }
+    Append-Output "" $script:White
+}
+
+#endregion
+
+#region ═══════════════════════════════════════════════════════════
 # INTERFAZ GRAFICA (WinForms)
 #═══════════════════════════════════════════════════════════════════
 
@@ -1129,7 +1455,7 @@ function New-FlatButton {
 # ── Panel superior ────────────────────────────────────────────────
 $topPanel           = New-Object System.Windows.Forms.Panel
 $topPanel.Dock      = "Top"
-$topPanel.Height    = 192
+$topPanel.Height    = 225
 $topPanel.BackColor = $bgPanel
 $form.Controls.Add($topPanel)
 
@@ -1219,9 +1545,14 @@ $btnRestart      = New-FlatButton "  Reiniciar"         10 153 140 28 ([System.D
 $btnGPUpdate     = New-FlatButton "  GPUpdate /force"  155 153 155 28 ([System.Drawing.Color]::FromArgb(  0, 100, 140))
 $btnPolicyCycles = New-FlatButton "  Ciclos SCCM"      315 153 150 28 ([System.Drawing.Color]::FromArgb( 60,  80, 130))
 
+# ── Fila 3: mantenimiento del sistema ─────────────────────────────
+$btnDism    = New-FlatButton "  DISM /Restore"    10 186 175 28 ([System.Drawing.Color]::FromArgb( 30,  80, 130))
+$btnSfc     = New-FlatButton "  SFC /scannow"    190 186 165 28 ([System.Drawing.Color]::FromArgb( 30,  80, 130))
+$btnChkdsk  = New-FlatButton "  ChkDsk /r"       360 186 145 28 ([System.Drawing.Color]::FromArgb(120,  70,  10))
+
 $btnCancel.Enabled = $false
 
-foreach ($b in @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnClear,$btnCancel,$btnRestart,$btnGPUpdate,$btnPolicyCycles)) {
+foreach ($b in @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnClear,$btnCancel,$btnRestart,$btnGPUpdate,$btnPolicyCycles,$btnDism,$btnSfc,$btnChkdsk)) {
     $topPanel.Controls.Add($b)
 }
 
@@ -1256,7 +1587,7 @@ $statusBar.Controls.Add($script:statusLabel)
 # ── Helpers de control de UI ──────────────────────────────────────
 
 # Lista de botones de accion (todos excepto Cancelar y Limpiar)
-$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnGPUpdate,$btnPolicyCycles,$btnPing)
+$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnGPUpdate,$btnPolicyCycles,$btnDism,$btnSfc,$btnChkdsk,$btnPing)
 
 function Set-ButtonsEnabled {
     param([bool]$Enabled)
@@ -1433,6 +1764,33 @@ $btnPolicyCycles.Add_Click({
         }
 })
 
+$btnDism.Add_Click({
+    $target = Get-ValidComputer
+    if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Ejecutando DISM /RestoreHealth en '$target'..." `
+        -Action    { Invoke-RemoteDism -ComputerName $target }
+    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+})
+
+$btnSfc.Add_Click({
+    $target = Get-ValidComputer
+    if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Ejecutando SFC /scannow en '$target'..." `
+        -Action    { Invoke-RemoteSfc -ComputerName $target }
+    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+})
+
+$btnChkdsk.Add_Click({
+    $target = Get-ValidComputer
+    if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Ejecutando ChkDsk /r en '$target'..." `
+        -Action    { Invoke-RemoteChkdsk -ComputerName $target }
+    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+})
+
 $btnClear.Add_Click({
     $script:outputBox.Clear()
     Set-Status "Listo" $white
@@ -1455,7 +1813,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.4.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.5.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
