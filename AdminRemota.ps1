@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.4.1 (GUI)
+    Herramienta de administracion remota unificada v2.4.2 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.4.1
+    2.4.2
 #>
 
 [CmdletBinding()]
@@ -924,10 +924,15 @@ function Invoke-UsbDriverClean {
         return
     }
 
-    # ── Fase D: Borrado con progreso visible ─────────────────────────
+    # ── Fase D: Borrado con progreso visible y timeout por driver ────
     Write-Sep
     Write-Info "Iniciando borrado de $total driver(s) [$modoTexto]..."
     Append-Output "" $script:White
+
+    # Tiempo maximo de espera por driver antes de declarar TIMEOUT y continuar.
+    # pnputil sobre un driver del stack USB puede quedar esperando liberaciones
+    # que nunca llegan; sin timeout el script se bloquea indefinidamente.
+    $timeoutSec = 15
 
     $okCount    = 0
     $warnCount  = 0
@@ -938,31 +943,74 @@ function Invoke-UsbDriverClean {
     foreach ($d in $driverList) {
         $idx++
         Write-Info ("  [{0}/{1}] Procesando: {2}" -f $idx, $total, $d.FriendlyName)
-        # Fuerza repintado sincrono del RichTextBox antes de que Invoke-Command
-        # bloquee el hilo UI. DoEvents() encola WM_PAINT pero no lo ejecuta
-        # de forma garantizada antes de un bloqueo externo; Update() si lo hace.
+        # Fuerza repintado sincrono antes del Start-Job para que el usuario vea
+        # el mensaje "Procesando" antes de que el UI thread entre en el bucle de espera.
         $script:outputBox.Update()
 
-        $rem = Invoke-Command -ComputerName $ComputerName -ArgumentList $d.InstanceId -ScriptBlock {
-            param($instanceId)
-            $out = pnputil /remove-device "$instanceId" 2>&1
-            return @{ Output = ($out -join ' ').Trim(); ExitCode = $LASTEXITCODE }
+        # Lanzar el borrado en un job independiente.
+        # Invoke-Command directo no tiene timeout de ejecucion: si pnputil espera la
+        # liberacion de un dispositivo bloqueado del stack USB, congela el hilo UI
+        # indefinidamente. Start-Job desacopla la ejecucion; Stop-Job la cancela.
+        $job = Start-Job -ArgumentList $ComputerName, $d.InstanceId -ScriptBlock {
+            param($computer, $instanceId)
+            try {
+                $res = Invoke-Command -ComputerName $computer -ArgumentList $instanceId `
+                    -ErrorAction SilentlyContinue -ScriptBlock {
+                        param($id)
+                        $out = pnputil /remove-device "$id" 2>&1
+                        return @{ Output = ($out -join ' ').Trim(); ExitCode = $LASTEXITCODE }
+                    }
+                return $res
+            } catch {
+                return @{ Output = $_.Exception.Message; ExitCode = -1 }
+            }
+        }
+
+        # Esperar con deadline manteniendo la GUI viva mediante DoEvents.
+        # Intervalo de 200ms: suficientemente corto para no congelar la ventana.
+        $deadline = (Get-Date).AddSeconds($timeoutSec)
+        while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 200
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        if ($job.State -eq 'Running') {
+            # El job sigue activo al superar el deadline: cancelar y continuar.
+            Stop-Job  $job
+            Remove-Job $job -Force
+            Write-Fail ("  [{0}/{1}] TIMEOUT -> {2}  (>{3}s, driver en uso o stack USB bloqueado)" -f `
+                $idx, $total, $d.FriendlyName, $timeoutSec)
+            $errorCount++
+            $results.Add([PSCustomObject]@{ Status="ERROR"; Name=$d.FriendlyName; Detail="TIMEOUT (>${timeoutSec}s)" })
+            continue
+        }
+
+        # Job completado: recoger resultado y limpiar
+        $rem = Receive-Job $job
+        Remove-Job $job -Force
+
+        if ($null -eq $rem) {
+            Write-Fail ("  [{0}/{1}] ERROR  -> {2}  (sin respuesta remota)" -f $idx, $total, $d.FriendlyName)
+            $errorCount++
+            $results.Add([PSCustomObject]@{ Status="ERROR"; Name=$d.FriendlyName; Detail="Sin respuesta remota" })
+            continue
         }
 
         switch ($rem.ExitCode) {
             0 {
                 Write-Ok   ("  [{0}/{1}] OK     -> {2}" -f $idx, $total, $d.FriendlyName)
                 $okCount++
-                $results.Add([PSCustomObject]@{ Status="OK";    Name=$d.FriendlyName; Detail="OK" })
+                $results.Add([PSCustomObject]@{ Status="OK";   Name=$d.FriendlyName; Detail="OK" })
             }
             3010 {
                 # pnputil: exito pero se requiere reinicio para completar
                 Write-Warn ("  [{0}/{1}] WARN   -> {2}  (requiere reinicio)" -f $idx, $total, $d.FriendlyName)
                 $warnCount++
-                $results.Add([PSCustomObject]@{ Status="WARN";  Name=$d.FriendlyName; Detail="Eliminado, pendiente reinicio" })
+                $results.Add([PSCustomObject]@{ Status="WARN"; Name=$d.FriendlyName; Detail="Eliminado, pendiente reinicio" })
             }
             default {
-                Write-Fail ("  [{0}/{1}] ERROR  -> {2}  | ExitCode={3} | {4}" -f $idx, $total, $d.FriendlyName, $rem.ExitCode, $rem.Output)
+                Write-Fail ("  [{0}/{1}] ERROR  -> {2}  | ExitCode={3} | {4}" -f `
+                    $idx, $total, $d.FriendlyName, $rem.ExitCode, $rem.Output)
                 $errorCount++
                 $results.Add([PSCustomObject]@{ Status="ERROR"; Name=$d.FriendlyName; Detail="ExitCode=$($rem.ExitCode)" })
             }
@@ -1388,7 +1436,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.4.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.4.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
