@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.3 (GUI)
+    Herramienta de administracion remota unificada v2.3.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.3
+    2.3.1
 #>
 
 [CmdletBinding()]
@@ -834,13 +834,20 @@ function Invoke-UsbDriverClean {
 
     $drivers = Invoke-Command -ComputerName $ComputerName -ArgumentList $soloFantasmas -ScriptBlock {
         param([bool]$onlyGhost)
-        # -PresentOnly $false es necesario para ver dispositivos no conectados (fantasmas)
-        $all = Get-PnpDevice -PresentOnly $false
+        # Get-PnpDevice SIN parametros devuelve todos los dispositivos (presentes + fantasma).
+        # -PresentOnly es el switch que RESTRINGE a solo presentes; sin el, se obtiene todo.
+        # NUNCA usar "-PresentOnly $false": SwitchParameter sin ":" activa el switch y pasa
+        # $false como argumento posicional, haciendo que Get-PnpDevice devuelva array vacio.
+        $all = Get-PnpDevice
         if ($onlyGhost) {
-            # Fantasmas: dispositivos USB no presentes (Status=Unknown = desconectado)
-            $all = $all | Where-Object { $_.Class -match "USB" -and $_.Status -eq "Unknown" }
+            # Fantasmas: Status=Unknown identifica dispositivos ausentes/desconectados.
+            # Se busca por FriendlyName O Class para no perder dispositivos USB cuya clase
+            # sea HIDClass, DiskDrive, etc. (no todos los USB tienen Class="USB").
+            $all = $all | Where-Object {
+                ($_.FriendlyName -match "USB" -or $_.Class -match "USB") -and $_.Status -eq "Unknown"
+            }
         } else {
-            # Todos: dispositivos USB, presentes o no
+            # Todos los USB: filtro identico al original que si funcionaba
             $all = $all | Where-Object { $_.FriendlyName -match "USB" -and $_.Class -match "USB" }
         }
         $all | Sort-Object Class, FriendlyName | Select-Object Status, Class, FriendlyName, InstanceId
@@ -1352,7 +1359,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.3.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
