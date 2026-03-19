@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.0 (GUI)
+    Herramienta de administracion remota unificada v2.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,13 +13,12 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.0
+    2.1
 #>
 
 [CmdletBinding()]
 param(
-    [string]$ExpectedIssuerLike = "*Airbus Issuing CA Juan de la Cierva*",
-    [string]$TaskName           = "MasterizacionCheck_15min"
+    [string]$ExpectedIssuerLike = "*Airbus Issuing CA Juan de la Cierva*"
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -540,130 +539,6 @@ function Invoke-MasterCheck {
     }
 
     Show-Summary -ExcludeWarnStep "success.txt"
-
-    # Ofrecer tarea programada si hay errores
-    if (-not ($script:StepResults | Where-Object { $_.Status -eq "ERROR" })) { return }
-
-    if ($script:Modo -eq "Divisional") {
-        Invoke-OfferAutoHealTask -ComputerName $ComputerName
-    } else {
-        Invoke-OfferScheduledTask -ComputerName $ComputerName
-    }
-}
-
-# ── Ofrece instalar tarea de auto-reparacion de certs (Divisional) ────────────
-function Invoke-OfferAutoHealTask {
-    param([string]$ComputerName)
-    if (-not (Confirm-Action "Hay errores en '$ComputerName'. Instalar tarea de auto-reparacion cada 15 min?`n(solo actua si faltan certs)")) { return }
-
-    $cesMapJson = ($script:CesMap | ConvertTo-Json -Depth 4)
-
-    # El script embebido referencia las URLs via JSON serializado para evitar duplicacion
-    $taskScript = @"
-# AirbusAutoEnroll_Task.ps1 - ejecutado por Tarea Programada como SYSTEM
-`$logFile = "C:\Windows\Temp\AirbusAutoEnroll.log"
-`$now     = Get-Date
-`$certs   = Get-ChildItem "Cert:\LocalMachine\My" -ErrorAction SilentlyContinue
-`$missing = @()
-
-foreach (`$caEntry in @(
-    @{ Name="Breguet G1";  Filter="*Breguet*" },
-    @{ Name="da Vinci G1"; Filter="*Vinci*"   }
-)) {
-    `$valid = @(`$certs | Where-Object { `$_.Issuer -like `$caEntry.Filter -and `$_.NotAfter -gt `$now })
-    if (`$valid.Count -eq 0) { `$missing += `$caEntry.Name }
-}
-
-if (`$missing.Count -eq 0) { exit 0 }
-
-"`[`$(`$now.ToString('dd/MM/yyyy HH:mm:ss'))`] FALTAN certs: `$(`$missing -join ', ')" | Add-Content `$logFile
-
-`$cesMap = '$cesMapJson' | ConvertFrom-Json
-# ConvertFrom-Json devuelve PSCustomObject; convertir a hashtable compatible
-`$cesHashMap = @{}
-`$cesMap.PSObject.Properties | ForEach-Object { `$cesHashMap[`$_.Name] = @(`$_.Value) }
-
-foreach (`$ct in `$missing) {
-    `$rand = Get-Random -Maximum 99999
-    `$base = "`$env:TEMP\AirbusTask_`$rand"
-    `$inf  = "`$base.inf"; `$req = "`$base.req"; `$cer = "`$base.cer"
-
-    @"
-[Version]
-Signature="``\`$Windows NT``\`$"
-
-[NewRequest]
-Subject = "CN=`$env:COMPUTERNAME"
-MachineKeySet = TRUE
-KeySpec       = AT_KEYEXCHANGE
-KeyLength     = 2048
-Exportable    = FALSE
-RequestType   = PKCS10
-
-"@ | Out-File `$inf -Encoding ASCII
-
-    certreq -new -machine -q `$inf `$req 2>&1 | Out-Null
-    if (`$LASTEXITCODE -ne 0) {
-        "`[`$((Get-Date).ToString('dd/MM/yyyy HH:mm:ss'))`] ERROR certreq -new para `$ct (ExitCode=`$(`$LASTEXITCODE))" | Add-Content `$logFile
-        Remove-Item `$inf -Force -ErrorAction SilentlyContinue
-        continue
-    }
-
-    `$enrolled = `$false
-    foreach (`$url in `$cesHashMap[`$ct]) {
-        `$job = Start-Job -ScriptBlock {
-            param(`$u,`$rq,`$cp)
-            certreq -submit -config `$u -attrib "CertificateTemplate:Airbusauto-enrolledclientauthentication" -q -AdminForceMachine -Kerberos `$rq `$cp 2>&1
-        } -ArgumentList `$url,`$req,`$cer
-        `$null = Wait-Job `$job -Timeout 20
-        if (`$job.State -eq 'Running') { Stop-Job `$job; Remove-Job `$job -Force; Remove-Item `$cer -Force -ErrorAction SilentlyContinue; continue }
-        `$null = Receive-Job `$job
-        `$ex   = if (`$job.ChildJobs[0].Error.Count -gt 0) { 1 } else { 0 }
-        Remove-Job `$job -Force
-        if (`$ex -eq 0 -and (Test-Path `$cer)) {
-            certreq -accept -machine `$cer 2>&1 | Out-Null
-            Remove-Item `$inf,`$req,`$cer -Force -ErrorAction SilentlyContinue
-            if (`$LASTEXITCODE -eq 0) {
-                "`[`$((Get-Date).ToString('dd/MM/yyyy HH:mm:ss'))`] CORREGIDO: `$ct inscrito OK via `$url" | Add-Content `$logFile
-                `$enrolled = `$true; break
-            }
-        }
-        Remove-Item `$cer -Force -ErrorAction SilentlyContinue
-    }
-    if (-not `$enrolled) {
-        "`[`$((Get-Date).ToString('dd/MM/yyyy HH:mm:ss'))`] ERROR: `$ct no pudo inscribirse en ningun CES" | Add-Content `$logFile
-    }
-    Remove-Item `$inf,`$req -Force -ErrorAction SilentlyContinue
-}
-"@
-
-    $taskName   = "AirbusAutoEnroll_15min"
-    $scriptPath = "C:\Windows\Temp\AirbusAutoEnroll_Task.ps1"
-
-    Invoke-Command -ComputerName $ComputerName -ArgumentList $taskName, $scriptPath, $taskScript -ScriptBlock {
-        param($tName, $sPath, $sContent)
-        $sContent | Out-File $sPath -Encoding UTF8 -Force
-        $st = (Get-Date).AddMinutes(1).ToString("HH:mm")
-        schtasks.exe /Create /TN $tName /SC MINUTE /MO 15 /RU SYSTEM /ST $st `
-            /TR "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$sPath`"" /F | Out-Null
-    }
-    Write-Ok  "Tarea '$taskName' instalada en '$ComputerName'."
-    Write-Info "  Actua solo si faltan certs. Log: C:\Windows\Temp\AirbusAutoEnroll.log"
-}
-
-# ── Ofrece instalar tarea programada con PS1 existente (Nacional) ─────────────
-function Invoke-OfferScheduledTask {
-    param([string]$ComputerName)
-    if (-not (Confirm-Action "Hay errores en '$ComputerName'. Instalar tarea programada cada 15 min?")) { return }
-    $ps1Remote = Get-Input "Ruta del .ps1 EN el equipo remoto`n(ej: C:\Scripts\Master-Checker.ps1)" "Tarea programada"
-    if ([string]::IsNullOrWhiteSpace($ps1Remote)) { return }
-    Invoke-Command -ComputerName $ComputerName -ArgumentList $script:TaskName, $ps1Remote -ScriptBlock {
-        param($tName, $ps1Path)
-        $st = (Get-Date).AddMinutes(1).ToString("HH:mm")
-        $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ps1Path`" -AutoRemoveTask"
-        schtasks.exe /Create /TN $tName /SC MINUTE /MO 15 /RU SYSTEM /ST $st /TR $tr /F | Out-Null
-    }
-    Write-Ok "Tarea '$($script:TaskName)' creada en '$ComputerName'."
 }
 
 #endregion
@@ -1337,7 +1212,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v3.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
