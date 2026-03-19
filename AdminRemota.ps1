@@ -789,41 +789,124 @@ function Invoke-SystemInfo {
 function Invoke-UsbDriverClean {
     param([Parameter(Mandatory)][string]$ComputerName)
 
-    Write-Info "Obteniendo drivers USB de '$ComputerName'..."
+    # ── Fase A: Deteccion ────────────────────────────────────────────
+    Write-Info "Buscando drivers USB en '$ComputerName'..."
     Write-Sep
 
-    $drivers = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+    $drivers    = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
         Get-PnpDevice | Where-Object {
             $_.FriendlyName -match "USB" -and $_.Class -match "USB"
-        } | Sort-Object Class | Select-Object Status, Class, FriendlyName, InstanceId
+        } | Sort-Object Class, FriendlyName |
+            Select-Object Status, Class, FriendlyName, InstanceId
     }
+    $driverList = @($drivers)
+    $total      = $driverList.Count
 
-    if (-not $drivers -or @($drivers).Count -eq 0) {
+    if ($total -eq 0) {
         Write-Warn "No se encontraron drivers USB en '$ComputerName'."
+        Write-Sep
         return
     }
 
-    Write-Info "Drivers USB encontrados:"
-    foreach ($d in $drivers) {
-        Append-Output ("    {0,-10} {1,-25} {2}" -f $d.Status, $d.Class, $d.FriendlyName) `
-                      ([System.Drawing.Color]::LightYellow)
-    }
+    Write-Info "Se encontraron $total driver(s) USB candidato(s):"
+    Append-Output "" $script:White
 
-    if (-not (Confirm-Action "Eliminar estos $(@($drivers).Count) driver(s) USB en '$ComputerName'?")) {
-        Write-Warn "Operacion cancelada."
+    $idx = 0
+    foreach ($d in $driverList) {
+        $idx++
+        $stateColor = switch ($d.Status) {
+            "OK"      { [System.Drawing.Color]::LightGreen              }
+            "Error"   { [System.Drawing.Color]::Tomato                  }
+            "Unknown" { [System.Drawing.Color]::Gray                    }
+            default   { [System.Drawing.Color]::LightYellow             }
+        }
+        Append-Output ("    [{0:D2}] {1,-10}  {2,-26}  {3}" -f $idx, $d.Status, $d.Class, $d.FriendlyName) $stateColor
+        Append-Output ("           InstanceId: {0}" -f $d.InstanceId) ([System.Drawing.Color]::FromArgb(120, 120, 120))
+    }
+    Append-Output "" $script:White
+
+    # ── Fase B: Confirmacion ─────────────────────────────────────────
+    if (-not (Confirm-Action (
+        "Se van a eliminar $total driver(s) USB en '$ComputerName'.`n`n" +
+        "Esta operacion puede requerir reinicio y no es facilmente reversible.`n`n" +
+        "¿Confirmar borrado?"
+    ))) {
+        Write-Warn "Borrado cancelado por el usuario. No se ha eliminado nada."
         return
     }
 
-    $ids = @($drivers | ForEach-Object { $_.InstanceId })
-    Invoke-Command -ComputerName $ComputerName -ArgumentList (,$ids) -ScriptBlock {
-        param($instanceIds)
-        foreach ($id in $instanceIds) { pnputil /remove-device "$id" }
-    }
-    Write-Ok "Drivers eliminados."
+    # ── Fase C: Borrado con progreso visible ─────────────────────────
+    Write-Sep
+    Write-Info "Iniciando borrado de $total driver(s)..."
+    Append-Output "" $script:White
 
-    if (Confirm-Action "Reiniciar '$ComputerName' ahora?") {
-        Restart-Computer -ComputerName $ComputerName -Force
-        Write-Ok "Reiniciando '$ComputerName'..."
+    $okCount    = 0
+    $warnCount  = 0
+    $errorCount = 0
+    $results    = [System.Collections.Generic.List[object]]::new()
+    $idx        = 0
+
+    foreach ($d in $driverList) {
+        $idx++
+        Write-Info ("  [{0}/{1}] Procesando: {2}" -f $idx, $total, $d.FriendlyName)
+
+        $rem = Invoke-Command -ComputerName $ComputerName -ArgumentList $d.InstanceId -ScriptBlock {
+            param($instanceId)
+            $out = pnputil /remove-device "$instanceId" 2>&1
+            return @{ Output = ($out -join ' ').Trim(); ExitCode = $LASTEXITCODE }
+        }
+
+        switch ($rem.ExitCode) {
+            0 {
+                Write-Ok   ("  [{0}/{1}] OK     -> {2}" -f $idx, $total, $d.FriendlyName)
+                $okCount++
+                $results.Add([PSCustomObject]@{ Status="OK";    Name=$d.FriendlyName; Detail="OK" })
+            }
+            3010 {
+                # pnputil: exito pero se requiere reinicio para completar
+                Write-Warn ("  [{0}/{1}] WARN   -> {2}  (requiere reinicio)" -f $idx, $total, $d.FriendlyName)
+                $warnCount++
+                $results.Add([PSCustomObject]@{ Status="WARN";  Name=$d.FriendlyName; Detail="Eliminado, pendiente reinicio" })
+            }
+            default {
+                Write-Fail ("  [{0}/{1}] ERROR  -> {2}  | ExitCode={3} | {4}" -f $idx, $total, $d.FriendlyName, $rem.ExitCode, $rem.Output)
+                $errorCount++
+                $results.Add([PSCustomObject]@{ Status="ERROR"; Name=$d.FriendlyName; Detail="ExitCode=$($rem.ExitCode)" })
+            }
+        }
+    }
+
+    # ── Fase D: Resumen final ────────────────────────────────────────
+    Append-Output "" $script:White
+    Write-Sep
+    Write-Info "RESUMEN DE BORRADO USB"
+    Write-Sep
+    Append-Output ("  Total encontrados  : {0}" -f $total)      $script:White
+    Append-Output ("  Eliminados OK      : {0}" -f $okCount)    ([System.Drawing.Color]::LightGreen)
+    if ($warnCount -gt 0) {
+        Append-Output ("  Requieren reinicio : {0}" -f $warnCount) ([System.Drawing.Color]::Yellow)
+    }
+    if ($errorCount -gt 0) {
+        Append-Output ("  Fallidos           : {0}" -f $errorCount) ([System.Drawing.Color]::Tomato)
+        Append-Output "" $script:White
+        Write-Fail "  Drivers con error:"
+        foreach ($r in ($results | Where-Object { $_.Status -eq "ERROR" })) {
+            Append-Output ("    -> {0}  ({1})" -f $r.Name, $r.Detail) ([System.Drawing.Color]::Tomato)
+        }
+    }
+    Write-Sep
+    Append-Output "" $script:White
+
+    # Ofrecer reinicio si hubo al menos un borrado (OK o pendiente de reinicio)
+    $deleted = $okCount + $warnCount
+    if ($deleted -gt 0) {
+        $reinicioMsg = "Se procesaron correctamente $deleted de $total driver(s)."
+        if ($warnCount -gt 0) { $reinicioMsg += "`n$warnCount requieren reinicio para completarse." }
+        $reinicioMsg += "`n`n¿Reiniciar '$ComputerName' ahora?"
+        if (Confirm-Action $reinicioMsg) {
+            Restart-Computer -ComputerName $ComputerName -Force
+            Write-Ok "Reiniciando '$ComputerName'..."
+        }
     }
 }
 
