@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.2.1 (GUI)
+    Herramienta de administracion remota unificada v2.3 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.2.1
+    2.3
 #>
 
 [CmdletBinding()]
@@ -795,23 +795,36 @@ function Invoke-UsbDriverClean {
     Write-Sep
     Append-Output "" $script:White
 
-    $modeChoice = [System.Windows.Forms.MessageBox]::Show(
-        "¿Qué drivers USB desea eliminar en '$ComputerName'?`n`n" +
-        "  [Sí]         Solo drivers fantasma (desconectados / no presentes)`n" +
-        "  [No]         Todos los drivers USB (presentes y no presentes)`n" +
-        "  [Cancelar]   Salir sin hacer nada",
-        "Modo de borrado USB",
+    # Paso 1: preguntar por drivers fantasma
+    $step1 = [System.Windows.Forms.MessageBox]::Show(
+        "Desea borrar drivers USB fantasma (desconectados / no presentes)?",
+        "Borrado USB - Paso 1 de 2",
         [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
         [System.Windows.Forms.MessageBoxIcon]::Question
     )
-
-    if ($modeChoice -eq [System.Windows.Forms.DialogResult]::Cancel) {
+    if ($step1 -eq [System.Windows.Forms.DialogResult]::Cancel) {
         Write-Warn "Operacion cancelada por el usuario."
         return
     }
 
-    $soloFantasmas = ($modeChoice -eq [System.Windows.Forms.DialogResult]::Yes)
-    $modoTexto     = if ($soloFantasmas) { "Solo fantasmas (desconectados)" } else { "Todos los drivers USB" }
+    $soloFantasmas = $false
+    if ($step1 -eq [System.Windows.Forms.DialogResult]::Yes) {
+        $soloFantasmas = $true
+    } else {
+        # Paso 2: preguntar por todos los drivers USB
+        $step2 = [System.Windows.Forms.MessageBox]::Show(
+            "Desea borrar TODOS los drivers USB (presentes y no presentes)?",
+            "Borrado USB - Paso 2 de 2",
+            [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+            [System.Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($step2 -ne [System.Windows.Forms.DialogResult]::Yes) {
+            Write-Warn "Operacion cancelada por el usuario."
+            return
+        }
+    }
+
+    $modoTexto = if ($soloFantasmas) { "Solo fantasmas (desconectados)" } else { "Todos los drivers USB" }
 
     Write-Info "Modo seleccionado: $modoTexto"
     Append-Output "" $script:White
@@ -868,7 +881,7 @@ function Invoke-UsbDriverClean {
     $confirmMsg = "Modo: $modoTexto`n`n" +
                   "Se van a eliminar $total driver(s) USB en '$ComputerName'.`n`n" +
                   "Esta operacion puede requerir reinicio y no es facilmente reversible.`n`n" +
-                  "¿Confirmar borrado?"
+                  "Confirmar borrado?"
     if (-not (Confirm-Action $confirmMsg)) {
         Write-Warn "Borrado cancelado por el usuario. No se ha eliminado nada."
         return
@@ -946,7 +959,7 @@ function Invoke-UsbDriverClean {
     if ($deleted -gt 0) {
         $reinicioMsg = "Se procesaron correctamente $deleted de $total driver(s)."
         if ($warnCount -gt 0) { $reinicioMsg += "`n$warnCount requieren reinicio para completarse." }
-        $reinicioMsg += "`n`n¿Reiniciar '$ComputerName' ahora?"
+        $reinicioMsg += "`n`nReiniciar '$ComputerName' ahora?"
         if (Confirm-Action $reinicioMsg) {
             Restart-Computer -ComputerName $ComputerName -Force
             Write-Ok "Reiniciando '$ComputerName'..."
@@ -1339,7 +1352,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.2.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
