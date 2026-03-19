@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.3.1 (GUI)
+    Herramienta de administracion remota unificada v2.4 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,11 +13,14 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.3.1
+    2.4
 #>
 
 [CmdletBinding()]
 param(
+    # Patron de issuer para validar el certificado en modo Nacional.
+    # Solo se usa en Invoke-MasterCheck rama Nacional; modo Divisional usa $script:DivisionalCerts.
+    # Como parametro de script-level, es accesible en funciones como $script:ExpectedIssuerLike.
     [string]$ExpectedIssuerLike = "*Airbus Issuing CA Juan de la Cierva*"
 )
 
@@ -51,17 +54,27 @@ $script:StepResults     = New-Object System.Collections.Generic.List[object]
 $script:White  = [System.Drawing.Color]::White
 $script:Silver = [System.Drawing.Color]::Silver
 
-# URLs CES Kerberos centralizadas (unica fuente de verdad)
-$script:CesMap = @{
-    "Breguet G1"  = @(
-        "https://aefews01.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20Breguet%20G1_CES_Kerberos/service.svc/CES",
-        "https://aefews02.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20Breguet%20G1_CES_Kerberos/service.svc/CES"
-    )
-    "da Vinci G1" = @(
-        "https://aefews01.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20da%20Vinci%20G1_CES_Kerberos/service.svc/CES",
-        "https://aefews02.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20da%20Vinci%20G1_CES_Kerberos/service.svc/CES"
-    )
-}
+# Configuracion de certificados Divisional: unica fuente de verdad.
+# Cada entrada define el nombre del cert, el filtro de issuer para deteccion y las URLs CES.
+# El nombre es la clave de union entre deteccion y enrollment — no duplicar en otro lugar.
+$script:DivisionalCerts = @(
+    @{
+        Name    = "Breguet G1"
+        Filter  = "*Breguet*"
+        CesUrls = @(
+            "https://aefews01.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20Breguet%20G1_CES_Kerberos/service.svc/CES",
+            "https://aefews02.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20Breguet%20G1_CES_Kerberos/service.svc/CES"
+        )
+    },
+    @{
+        Name    = "da Vinci G1"
+        Filter  = "*Vinci*"
+        CesUrls = @(
+            "https://aefews01.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20da%20Vinci%20G1_CES_Kerberos/service.svc/CES",
+            "https://aefews02.autoenroll.pki.intra.corp/Airbus%20Issuing%20CA%20da%20Vinci%20G1_CES_Kerberos/service.svc/CES"
+        )
+    }
+)
 
 #endregion
 
@@ -159,8 +172,14 @@ function Invoke-Step {
     Write-Info "---- $Name ----"
     try {
         $res     = & $ScriptBlock
-        $status  = if ($res -is [hashtable] -and $res.Status)  { $res.Status }                        else { "OK"  }
-        $details = if ($res -is [hashtable] -and $res.Details) { ($res.Details | Out-String).Trim() } else { ""   }
+        # Si el scriptblock devuelve null (Invoke-Command silenciado por red/acceso), se
+        # registra como WARN en lugar de OK para no dar falsos positivos en el resumen.
+        $status  = if     ($res -is [hashtable] -and $res.Status) { $res.Status }
+                   elseif ($null -eq $res)                         { "WARN"      }
+                   else                                            { "OK"        }
+        $details = if ($res -is [hashtable] -and $res.Details) { ($res.Details | Out-String).Trim() }
+                   elseif ($null -eq $res)                      { "Sin respuesta remota (red o acceso?)" }
+                   else                                         { "" }
         Add-StepResult -Step $Name -Status $status -Details $details
         switch ($status) {
             "OK"    { Write-Ok   $Name }
@@ -210,28 +229,6 @@ function Invoke-RemoteGpupdate {
     }
     if ($ec -eq 0) { return @{ Status = "OK";   Details = "ExitCode=0" } }
     else            { return @{ Status = "WARN"; Details = "ExitCode=$ec" } }
-}
-
-# ── Busca software por nombre en el registro Uninstall (32 y 64 bits) ─────────
-function Get-RemoteInstalledSoftware {
-    param(
-        [Parameter(Mandatory)][string]$ComputerName,
-        [Parameter(Mandatory)][string]$NameFilter
-    )
-    return Invoke-Command -ComputerName $ComputerName -ArgumentList $NameFilter -ScriptBlock {
-        param($filter)
-        $paths = @(
-            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-        )
-        foreach ($p in $paths) {
-            $match = Get-ItemProperty $p -ErrorAction SilentlyContinue |
-                     Where-Object { $_.DisplayName -like $filter } |
-                     Select-Object -First 1
-            if ($match) { return "$($match.DisplayName) v$($match.DisplayVersion)" }
-        }
-        return $null
-    }
 }
 
 # ── Comprueba que CcmExec esta Running y el namespace ClientSDK accesible ─────
@@ -374,6 +371,9 @@ RequestType   = PKCS10
 
 function Invoke-MasterCheck {
     param([Parameter(Mandatory)][string]$ComputerName)
+    # $script:Target captura el equipo en scope de script para que los scriptblocks
+    # pasados a Invoke-Step puedan acceder a el sin depender de la captura lexical
+    # de closures anidados, que es fragil en PS5.1 con scriptblocks pasados como parametro.
     $script:Target = $ComputerName
     Reset-StepResults
 
@@ -389,15 +389,15 @@ function Invoke-MasterCheck {
     if ($script:Modo -eq "Divisional") {
         Invoke-Step -Name "Certificados Divisional (Breguet G1 + da Vinci G1)" -ScriptBlock {
 
-            $result = Invoke-Command -ComputerName $script:Target -ScriptBlock {
+            # Pasar solo Name y Filter al remoto (CesUrls no son necesarias para deteccion)
+            $certDefsForRemote = @($script:DivisionalCerts | ForEach-Object { @{ Name=$_.Name; Filter=$_.Filter } })
+            $result = Invoke-Command -ComputerName $script:Target -ArgumentList (,$certDefsForRemote) -ScriptBlock {
+                param([object[]]$certDefs)
                 $all     = Get-ChildItem "Cert:\LocalMachine\My" -ErrorAction SilentlyContinue
                 $now     = Get-Date
                 $details = @(); $missing = @(); $cleaned = @()
 
-                foreach ($caEntry in @(
-                    @{ Name="Breguet G1";  Filter="*Breguet*" },
-                    @{ Name="da Vinci G1"; Filter="*Vinci*"   }
-                )) {
+                foreach ($caEntry in $certDefs) {
                     $certs = @($all | Where-Object {
                         $_.Issuer -like $caEntry.Filter -and $_.NotAfter -gt $now
                     } | Sort-Object NotAfter -Descending)
@@ -430,10 +430,10 @@ function Invoke-MasterCheck {
             if ($result.Status -eq "ERROR" -and $missingCerts.Count -gt 0) {
                 $missingStr = $missingCerts -join ", "
                 if (Confirm-Action "Faltan certs en '$($script:Target)': $missingStr.`nInscribir via CES Kerberos (aefews01/02)?") {
-                    $cesMapSnapshot = $script:CesMap   # captura para closure remoto
                     foreach ($certType in $missingCerts) {
-                        $urls = $cesMapSnapshot[$certType]
-                        $ct   = $certType
+                        $certDef = $script:DivisionalCerts | Where-Object { $_.Name -eq $certType } | Select-Object -First 1
+                        $urls    = @($certDef.CesUrls)
+                        $ct      = $certType
                         Invoke-Step -Name "Inscribir $ct via certreq+CES" -ScriptBlock {
                             $remoteResult = Invoke-Command -ComputerName $script:Target `
                                 -ArgumentList $urls, $ct, $script:CertreqEnrollBlock -ScriptBlock {
@@ -980,8 +980,6 @@ function Invoke-UsbDriverClean {
 # INTERFAZ GRAFICA (WinForms)
 #═══════════════════════════════════════════════════════════════════
 
-$script:ExpectedIssuerLike = $ExpectedIssuerLike
-
 # ── Colores y fuentes ────────────────────────────────────────────
 $bgDark      = [System.Drawing.Color]::FromArgb(28,  28,  28)
 $bgPanel     = [System.Drawing.Color]::FromArgb(45,  45,  48)
@@ -1291,53 +1289,51 @@ $btnRestart.Add_Click({
 $btnGPUpdate.Add_Click({
     $target = Get-ValidComputer
     if (-not $target) { return }
-    Set-ButtonsEnabled $false
-    Set-Status "Ejecutando gpupdate /force en '$target'..." ([System.Drawing.Color]::Yellow)
-    Write-Sep
-    Write-Info "gpupdate /force en '$target'..."
-    try {
-        $res = Invoke-RemoteGpupdate -ComputerName $target
-        if ($res.Status -eq "OK") {
-            Write-Ok "gpupdate completado correctamente ($($res.Details))."
-            Set-Status "GPUpdate OK en '$target'" ([System.Drawing.Color]::LightGreen)
-        } else {
-            Write-Warn "gpupdate: $($res.Details)."
-            Set-Status "GPUpdate WARN ($($res.Details))" ([System.Drawing.Color]::Yellow)
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Ejecutando gpupdate /force en '$target'..." `
+        -Action {
+            Write-Sep
+            Write-Info "gpupdate /force en '$target'..."
+            $res = Invoke-RemoteGpupdate -ComputerName $target
+            Write-Sep
+            Append-Output "" $script:White
+            if ($res -and $res.Status -eq "OK") {
+                Write-Ok "gpupdate completado correctamente ($($res.Details))."
+                Set-Status "GPUpdate OK en '$target'" ([System.Drawing.Color]::LightGreen)
+            } else {
+                $detail = if ($res) { $res.Details } else { "Sin respuesta remota" }
+                Write-Warn "gpupdate: $detail."
+                Set-Status "GPUpdate WARN en '$target'" ([System.Drawing.Color]::Yellow)
+            }
         }
-    } catch {
-        Write-Fail "Error ejecutando gpupdate en '$target': $_"
-        Set-Status "Error en gpupdate" ([System.Drawing.Color]::Tomato)
-    }
-    Write-Sep
-    Append-Output "" $white
-    Set-ButtonsEnabled $true
 })
 
 $btnPolicyCycles.Add_Click({
     $target = Get-ValidComputer
     if (-not $target) { return }
-    Set-ButtonsEnabled $false
-    Set-Status "Lanzando ciclos SCCM en '$target'..." ([System.Drawing.Color]::Yellow)
-    Write-Sep
-    Write-Info "Ciclos de politicas SCCM en '$target'..."
-    try {
-        $result = Invoke-Command -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
-        switch ($result.Status) {
-            "OK"    { Write-Ok   "Ciclos completados: $($result.Details)"
-                      Set-Status "Ciclos SCCM OK en '$target'" ([System.Drawing.Color]::LightGreen) }
-            "WARN"  { Write-Warn "Ciclos con avisos: $($result.Details)"
-                      Set-Status "Ciclos SCCM con avisos" ([System.Drawing.Color]::Yellow) }
-            "ERROR" { Write-Fail "Ciclos con errores: $($result.Details)"
-                      Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato) }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Lanzando ciclos SCCM en '$target'..." `
+        -Action {
+            Write-Sep
+            Write-Info "Ciclos de politicas SCCM en '$target'..."
+            $result = Invoke-Command -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
+            Write-Sep
+            Append-Output "" $script:White
+            if ($result) {
+                switch ($result.Status) {
+                    "OK"    { Write-Ok   "Ciclos completados: $($result.Details)"
+                              Set-Status "Ciclos SCCM OK en '$target'" ([System.Drawing.Color]::LightGreen) }
+                    "WARN"  { Write-Warn "Ciclos con avisos: $($result.Details)"
+                              Set-Status "Ciclos SCCM con avisos" ([System.Drawing.Color]::Yellow) }
+                    "ERROR" { Write-Fail "Ciclos con errores: $($result.Details)"
+                              Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato) }
+                }
+            } else {
+                Write-Warn "Sin respuesta del cliente SCCM. Verifica que CcmExec esta activo."
+                Write-Info "  Verifica que el cliente SCCM esta instalado y activo."
+                Set-Status "Sin respuesta SCCM en '$target'" ([System.Drawing.Color]::Yellow)
+            }
         }
-    } catch {
-        Write-Fail "Error al lanzar ciclos SCCM en '$target': $_"
-        Write-Info "  Verifica que el cliente SCCM esta instalado y activo."
-        Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato)
-    }
-    Write-Sep
-    Append-Output "" $white
-    Set-ButtonsEnabled $true
 })
 
 $btnClear.Add_Click({
@@ -1346,6 +1342,9 @@ $btnClear.Add_Click({
 })
 
 $btnCancel.Add_Click({
+    # Nota: la cancelacion es "entre pasos" — Invoke-Step comprueba $cancelRequested al inicio
+    # de cada paso. Un Invoke-Command en curso no se puede interrumpir (WinForms es single-thread).
+    # Remove-PSSession cierra sesiones persistentes pero no corta una llamada bloqueante activa.
     $script:cancelRequested = $true
     Write-Warn "Cancelacion solicitada - abortando sesiones remotas..."
     Set-Status "Cancelando..." ([System.Drawing.Color]::Orange)
@@ -1359,7 +1358,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.3.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.4" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
