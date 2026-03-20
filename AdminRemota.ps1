@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.8
+    2.8.9
 #>
 
 [CmdletBinding()]
@@ -48,7 +48,6 @@ $script:statusLabel     = $null
 $script:progressBar     = $null
 $script:progressLabel   = $null
 $script:cancelRequested = $false
-$script:EquipoSelCard   = $null        # tarjeta actualmente seleccionada en el panel lateral
 $script:Modo            = "Nacional"   # "Nacional" | "Divisional"
 $script:Target          = ""
 $script:StepResults     = New-Object System.Collections.Generic.List[object]
@@ -1676,14 +1675,20 @@ $rightBtnPanel.Controls.Add($btnAddEquipo)
 $rightBtnPanel.Controls.Add($btnRemoveEquipo)
 $rightBtnPanel.Controls.Add($btnRefreshEquipos)
 
-$script:flowEquipos               = New-Object System.Windows.Forms.FlowLayoutPanel
-$script:flowEquipos.Dock          = "Fill"
-$script:flowEquipos.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-$script:flowEquipos.AutoScroll    = $true
-$script:flowEquipos.WrapContents  = $true
-$script:flowEquipos.BackColor     = [System.Drawing.Color]::FromArgb(32, 32, 35)
-$script:flowEquipos.Padding       = New-Object System.Windows.Forms.Padding(3, 8, 0, 3)
-$rightPanel.Controls.Add($script:flowEquipos)
+$script:lvEquipos              = New-Object System.Windows.Forms.ListView
+$script:lvEquipos.Dock         = "Fill"
+$script:lvEquipos.View         = [System.Windows.Forms.View]::Details
+$script:lvEquipos.FullRowSelect = $true
+$script:lvEquipos.MultiSelect  = $false
+$script:lvEquipos.HideSelection = $false
+$script:lvEquipos.HeaderStyle  = [System.Windows.Forms.ColumnHeaderStyle]::None
+$script:lvEquipos.BackColor    = [System.Drawing.Color]::FromArgb(32, 32, 35)
+$script:lvEquipos.ForeColor    = [System.Drawing.Color]::White
+$script:lvEquipos.BorderStyle  = "None"
+$script:lvEquipos.Font         = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
+$null = $script:lvEquipos.Columns.Add("Estado", 68)
+$null = $script:lvEquipos.Columns.Add("Equipo", 132)
+$rightPanel.Controls.Add($script:lvEquipos)
 
 $script:outputBox.BringToFront()   # Fill solo ocupa el espacio restante
 
@@ -1700,85 +1705,49 @@ $statusBar.Controls.Add($script:statusLabel)
 # Archivo de persistencia en el mismo directorio que el script
 $script:EquiposFile = Join-Path $PSScriptRoot "equipos_seguimiento.json"
 
-# ── Click handler compartido ──────────────────────────────────────
-# Usa [System.EventHandler] para recibir el sender directamente, eliminando
-# los problemas de closure de PS 5.1 con variables de funcion capturadas.
-# Sube por la jerarquia de controles hasta encontrar el Panel-tarjeta
-# (reconocible porque su Tag contiene el nombre del equipo).
-$script:CardClickHandler = [System.EventHandler]{
-    param($sender, $e)
-    if ($sender.Tag) {
-        $script:EquipoInputBox.Text = $sender.Tag
-        Set-EquipoSeleccionado $sender
-    }
-}
+# ── Helpers del ListView de equipos ──────────────────────────────
 
-function Set-EquipoSeleccionado {
-    param($CardPanel)
-    foreach ($c in $script:flowEquipos.Controls) {
-        if ($c -is [System.Windows.Forms.Button]) {
-            $c.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 58)
-        }
-    }
-    if ($CardPanel) { $CardPanel.BackColor = [System.Drawing.Color]::FromArgb(0, 80, 140) }
-    $script:EquipoSelCard = $CardPanel
-}
-
-function New-EquipoCard {
+function Add-EquipoToList {
     param([string]$Name)
-
-    $btn                              = New-Object System.Windows.Forms.Button
-    $btn.Tag                          = $Name
-    $btn.Width                        = 175
-    $btn.Height                       = 44
-    $btn.AutoSize                     = $false
-    $btn.Text                         = "... | $Name"
-    $btn.TextAlign                    = "MiddleLeft"
-    $btn.FlatStyle                    = "Flat"
-    $btn.FlatAppearance.BorderSize    = 0
-    $btn.Font                         = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $btn.ForeColor                    = [System.Drawing.Color]::Gray
-    $btn.BackColor                    = [System.Drawing.Color]::FromArgb(55, 55, 58)
-    $btn.Cursor                       = "Hand"
-    $btn.Margin                       = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
-    $btn.Padding                      = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
-    $btn.Add_Click($script:CardClickHandler)
-
-    return $btn
+    $item          = New-Object System.Windows.Forms.ListViewItem("...")
+    $item.Tag      = $Name
+    $item.ForeColor = [System.Drawing.Color]::Gray
+    $null          = $item.SubItems.Add($Name)
+    $null          = $script:lvEquipos.Items.Add($item)
+    return $item
 }
 
 function Update-EquipoCard {
-    param($CardPanel)
-    $online = Test-Connection -ComputerName $CardPanel.Tag -Count 1 -Quiet -ErrorAction SilentlyContinue
+    param($item)
+    $online = Test-Connection -ComputerName $item.Tag -Count 1 -Quiet -ErrorAction SilentlyContinue
     if ($online) {
-        $CardPanel.Text      = "ONLINE | $($CardPanel.Tag)"
-        $CardPanel.ForeColor = [System.Drawing.Color]::LightGreen
+        $item.SubItems[0].Text = "ONLINE"
+        $item.ForeColor        = [System.Drawing.Color]::LightGreen
     } else {
-        $CardPanel.Text      = "OFFLINE | $($CardPanel.Tag)"
-        $CardPanel.ForeColor = [System.Drawing.Color]::Tomato
+        $item.SubItems[0].Text = "OFFLINE"
+        $item.ForeColor        = [System.Drawing.Color]::Tomato
     }
     [System.Windows.Forms.Application]::DoEvents()
 }
 
 function Refresh-EquipoEstados {
-    foreach ($card in @($script:flowEquipos.Controls)) {
-        if ($card -is [System.Windows.Forms.Button] -and $card.Tag) {
-            Update-EquipoCard $card
-        }
+    foreach ($item in @($script:lvEquipos.Items)) {
+        if ($item.Tag) { Update-EquipoCard $item }
     }
 }
+
+# Seleccion en ListView -> carga equipo en textbox principal
+$script:lvEquipos.Add_SelectedIndexChanged({
+    if ($script:lvEquipos.SelectedItems.Count -eq 0) { return }
+    $script:EquipoInputBox.Text = $script:lvEquipos.SelectedItems[0].Tag
+})
 
 # ── Persistencia de la lista de equipos ───────────────────────────
 
 function Save-EquipoList {
     try {
-        $names = @($script:flowEquipos.Controls |
-            Where-Object { $_ -is [System.Windows.Forms.Button] -and $_.Tag } |
-            ForEach-Object { $_.Tag })
-        # -InputObject pasa el array completo como un objeto unico → JSON de array valido.
-        # Piping elemento a elemento produciria strings JSON separadas (malformado) y
-        # con array vacio no escribiria nada, dejando el archivo con contenido antiguo.
-        $json = if ($names.Count -gt 0) { ConvertTo-Json -InputObject $names -Compress } else { '[]' }
+        $names = @($script:lvEquipos.Items | ForEach-Object { $_.Tag })
+        $json  = if ($names.Count -gt 0) { ConvertTo-Json -InputObject $names -Compress } else { '[]' }
         Set-Content -Path $script:EquiposFile -Value $json -Encoding UTF8
     } catch { <# sin permisos de escritura: se ignora silenciosamente #> }
 }
@@ -1788,15 +1757,11 @@ function Load-EquipoList {
     try {
         $raw  = Get-Content -Path $script:EquiposFile -Raw -Encoding UTF8
         $data = $raw | ConvertFrom-Json
-        # ConvertFrom-Json devuelve string si hay 1 elemento, array si hay varios.
-        # @() normaliza ambos casos.
         foreach ($name in @($data)) {
             if ([string]::IsNullOrWhiteSpace($name)) { continue }
-            $already = $script:flowEquipos.Controls |
-                Where-Object { $_ -is [System.Windows.Forms.Button] -and $_.Tag -eq $name }
+            $already = $script:lvEquipos.Items | Where-Object { $_.Tag -eq $name }
             if ($already) { continue }
-            $card = New-EquipoCard $name
-            $script:flowEquipos.Controls.Add($card)
+            $null = Add-EquipoToList $name
         }
     } catch { <# archivo corrupto: se ignora silenciosamente #> }
 }
@@ -2037,9 +2002,7 @@ $btnAddEquipo.Add_Click({
     $input = Get-Input "Nombre del equipo a anadir:" "Anadir equipo"
     $input = $input.Trim().ToUpper()
     if ([string]::IsNullOrEmpty($input)) { return }
-    $exists = $script:flowEquipos.Controls | Where-Object {
-        $_ -is [System.Windows.Forms.Button] -and $_.Tag -eq $input
-    }
+    $exists = $script:lvEquipos.Items | Where-Object { $_.Tag -eq $input }
     if ($exists) {
         [System.Windows.Forms.MessageBox]::Show(
             "'$input' ya esta en la lista.",
@@ -2048,14 +2011,13 @@ $btnAddEquipo.Add_Click({
             [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         return
     }
-    $card = New-EquipoCard $input
-    $script:flowEquipos.Controls.Add($card)
+    $item = Add-EquipoToList $input
     Save-EquipoList
-    Update-EquipoCard $card
+    Update-EquipoCard $item
 })
 
 $btnRemoveEquipo.Add_Click({
-    if (-not $script:EquipoSelCard) {
+    if ($script:lvEquipos.SelectedItems.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show(
             "Haz clic en un equipo de la lista para seleccionarlo primero.",
             "Nada seleccionado",
@@ -2063,13 +2025,12 @@ $btnRemoveEquipo.Add_Click({
             [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         return
     }
-    $script:flowEquipos.Controls.Remove($script:EquipoSelCard)
-    $script:EquipoSelCard = $null
+    $script:lvEquipos.Items.Remove($script:lvEquipos.SelectedItems[0])
     Save-EquipoList
 })
 
 $btnRefreshEquipos.Add_Click({
-    if ($script:flowEquipos.Controls.Count -eq 0) { return }
+    if ($script:lvEquipos.Items.Count -eq 0) { return }
     Set-Status "Refrescando estado de equipos..." ([System.Drawing.Color]::Yellow)
     Refresh-EquipoEstados
     Set-Status "Listo" $white
