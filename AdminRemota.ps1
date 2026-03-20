@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.7.0 (GUI)
+    Herramienta de administracion remota unificada v2.8.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.7.0
+    2.8.0
 #>
 
 [CmdletBinding()]
@@ -1687,6 +1687,26 @@ $statusBar.Controls.Add($script:statusLabel)
 
 # ── Helpers del panel lateral de equipos ─────────────────────────
 
+# Archivo de persistencia en el mismo directorio que el script
+$script:EquiposFile = Join-Path $PSScriptRoot "equipos_seguimiento.json"
+
+# ── Click handler compartido ──────────────────────────────────────
+# Usa [System.EventHandler] para recibir el sender directamente, eliminando
+# los problemas de closure de PS 5.1 con variables de funcion capturadas.
+# Sube por la jerarquia de controles hasta encontrar el Panel-tarjeta
+# (reconocible porque su Tag contiene el nombre del equipo).
+$script:CardClickHandler = [System.EventHandler]{
+    param($sender, $e)
+    $ctrl = $sender
+    while ($ctrl -and -not ($ctrl -is [System.Windows.Forms.Panel] -and $ctrl.Tag)) {
+        $ctrl = $ctrl.Parent
+    }
+    if ($ctrl -and $ctrl.Tag) {
+        $script:EquipoInputBox.Text = $ctrl.Tag
+        Set-EquipoSeleccionado $ctrl
+    }
+}
+
 function Set-EquipoSeleccionado {
     param($CardPanel)
     foreach ($c in $script:flowEquipos.Controls) {
@@ -1704,7 +1724,7 @@ function New-EquipoCard {
     $card           = New-Object System.Windows.Forms.Panel
     $card.Tag       = $Name
     $card.Width     = 185
-    $card.Height    = 50
+    $card.Height    = 52
     $card.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 58)
     $card.Cursor    = "Hand"
     $card.Margin    = New-Object System.Windows.Forms.Padding(2, 2, 2, 1)
@@ -1714,32 +1734,29 @@ function New-EquipoCard {
     $lName.Text      = $Name
     $lName.ForeColor = [System.Drawing.Color]::White
     $lName.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $lName.Location  = New-Object System.Drawing.Point(8, 5)
+    $lName.Location  = New-Object System.Drawing.Point(8, 4)
     $lName.Size      = New-Object System.Drawing.Size(170, 18)
     $lName.BackColor = [System.Drawing.Color]::Transparent
     $lName.Cursor    = "Hand"
     $card.Controls.Add($lName)
 
+    # Linea de estado: "● ONLINE" (verde) o "● OFFLINE" (rojo), en negrita para mayor visibilidad
     $lStatus           = New-Object System.Windows.Forms.Label
     $lStatus.Name      = "lblStatus"
-    $lStatus.Text      = " Pendiente..."
+    $lStatus.Text      = "  Pendiente..."
     $lStatus.ForeColor = [System.Drawing.Color]::Gray
-    $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-    $lStatus.Location  = New-Object System.Drawing.Point(8, 27)
-    $lStatus.Size      = New-Object System.Drawing.Size(170, 16)
+    $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+    $lStatus.Location  = New-Object System.Drawing.Point(6, 29)
+    $lStatus.Size      = New-Object System.Drawing.Size(172, 16)
     $lStatus.BackColor = [System.Drawing.Color]::Transparent
     $lStatus.Cursor    = "Hand"
     $card.Controls.Add($lStatus)
 
-    # Cada invocacion de New-EquipoCard tiene su propio scope con su propio $card.
-    # El closure captura esa instancia concreta: varios click handlers funcionan de forma independiente.
-    $clickHandler = {
-        $script:EquipoInputBox.Text = $card.Tag
-        Set-EquipoSeleccionado $card
-    }
-    $card.Add_Click($clickHandler)
-    $lName.Add_Click($clickHandler)
-    $lStatus.Add_Click($clickHandler)
+    # Registrar el handler compartido en la tarjeta y en sus hijos.
+    # El handler lee el Tag del sender (o de su padre Panel), sin depender de closures.
+    $card.Add_Click($script:CardClickHandler)
+    $lName.Add_Click($script:CardClickHandler)
+    $lStatus.Add_Click($script:CardClickHandler)
 
     return $card
 }
@@ -1750,10 +1767,10 @@ function Update-EquipoCard {
     if (-not $lStatus) { return }
     $online = Test-Connection -ComputerName $CardPanel.Tag -Count 1 -Quiet -ErrorAction SilentlyContinue
     if ($online) {
-        $lStatus.Text      = " Online"
+        $lStatus.Text      = "  ONLINE"
         $lStatus.ForeColor = [System.Drawing.Color]::LightGreen
     } else {
-        $lStatus.Text      = " Offline"
+        $lStatus.Text      = "  OFFLINE"
         $lStatus.ForeColor = [System.Drawing.Color]::Tomato
     }
     [System.Windows.Forms.Application]::DoEvents()
@@ -1765,6 +1782,35 @@ function Refresh-EquipoEstados {
             Update-EquipoCard $card
         }
     }
+}
+
+# ── Persistencia de la lista de equipos ───────────────────────────
+
+function Save-EquipoList {
+    try {
+        $names = @($script:flowEquipos.Controls |
+            Where-Object { $_ -is [System.Windows.Forms.Panel] -and $_.Tag } |
+            ForEach-Object { $_.Tag })
+        $names | ConvertTo-Json -Compress | Set-Content -Path $script:EquiposFile -Encoding UTF8
+    } catch { <# sin permisos de escritura: se ignora silenciosamente #> }
+}
+
+function Load-EquipoList {
+    if (-not (Test-Path $script:EquiposFile)) { return }
+    try {
+        $raw  = Get-Content -Path $script:EquiposFile -Raw -Encoding UTF8
+        $data = $raw | ConvertFrom-Json
+        # ConvertFrom-Json devuelve string si hay 1 elemento, array si hay varios.
+        # @() normaliza ambos casos.
+        foreach ($name in @($data)) {
+            if ([string]::IsNullOrWhiteSpace($name)) { continue }
+            $already = $script:flowEquipos.Controls |
+                Where-Object { $_ -is [System.Windows.Forms.Panel] -and $_.Tag -eq $name }
+            if ($already) { continue }
+            $card = New-EquipoCard $name
+            $script:flowEquipos.Controls.Add($card)
+        }
+    } catch { <# archivo corrupto: se ignora silenciosamente #> }
 }
 
 # ── Helpers de control de UI ──────────────────────────────────────
@@ -1982,7 +2028,7 @@ $btnCancel.Add_Click({
 
 $btnAddEquipo.Add_Click({
     $input = Get-Input "Nombre del equipo a anadir:" "Anadir equipo"
-    $input = $input.Trim()
+    $input = $input.Trim().ToUpper()
     if ([string]::IsNullOrEmpty($input)) { return }
     $exists = $script:flowEquipos.Controls | Where-Object {
         $_ -is [System.Windows.Forms.Panel] -and $_.Tag -eq $input
@@ -1997,13 +2043,14 @@ $btnAddEquipo.Add_Click({
     }
     $card = New-EquipoCard $input
     $script:flowEquipos.Controls.Add($card)
+    Save-EquipoList
     Update-EquipoCard $card
 })
 
 $btnRemoveEquipo.Add_Click({
     if (-not $script:EquipoSelCard) {
         [System.Windows.Forms.MessageBox]::Show(
-            "Selecciona un equipo de la lista primero.",
+            "Haz clic en un equipo de la lista para seleccionarlo primero.",
             "Nada seleccionado",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
@@ -2011,6 +2058,7 @@ $btnRemoveEquipo.Add_Click({
     }
     $script:flowEquipos.Controls.Remove($script:EquipoSelCard)
     $script:EquipoSelCard = $null
+    Save-EquipoList
 })
 
 $btnRefreshEquipos.Add_Click({
@@ -2026,7 +2074,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.7.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.8.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
@@ -2035,6 +2083,8 @@ $form.Add_Shown({
     Append-Output "  > 'Info del Sistema' muestra SO, IP, MAC, CPU, RAM, discos y mas." $silver
     Write-Sep
     Append-Output "" $white
+    # Cargar equipos en seguimiento guardados en sesiones anteriores
+    Load-EquipoList
 })
 
 [System.Windows.Forms.Application]::Run($form)
