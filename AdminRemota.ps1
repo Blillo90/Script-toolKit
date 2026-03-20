@@ -1682,7 +1682,7 @@ $script:flowEquipos.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDow
 $script:flowEquipos.AutoScroll    = $true
 $script:flowEquipos.WrapContents  = $false
 $script:flowEquipos.BackColor     = [System.Drawing.Color]::FromArgb(32, 32, 35)
-$script:flowEquipos.Padding       = New-Object System.Windows.Forms.Padding(3, 3, 0, 3)
+$script:flowEquipos.Padding       = New-Object System.Windows.Forms.Padding(3, 8, 0, 3)
 $rightPanel.Controls.Add($script:flowEquipos)
 
 $script:outputBox.BringToFront()   # Fill solo ocupa el espacio restante
