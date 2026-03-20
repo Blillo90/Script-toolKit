@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.5.0 (GUI)
+    Herramienta de administracion remota unificada v2.5.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.5.0
+    2.5.1
 #>
 
 [CmdletBinding()]
@@ -1355,7 +1355,7 @@ function Invoke-RemoteChkdsk {
     }
 
     Write-Sep
-    Write-Info "Salida de ChkDsk $driveTarget:"
+    Write-Info "Salida de ChkDsk ${driveTarget}:"
     foreach ($line in ($rem.Output -split "`n" | Where-Object { $_.Trim() })) {
         $l      = $line.Trim()
         $lColor = if     ($l -match "programar|reinicio|reboot|schedule|restart|siguiente")  { [System.Drawing.Color]::Yellow      }
@@ -1813,7 +1813,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.5.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.5.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
