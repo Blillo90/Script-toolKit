@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.5
+    2.8.6
 #>
 
 [CmdletBinding()]
@@ -1678,9 +1678,9 @@ $rightBtnPanel.Controls.Add($btnRefreshEquipos)
 
 $script:flowEquipos               = New-Object System.Windows.Forms.FlowLayoutPanel
 $script:flowEquipos.Dock          = "Fill"
-$script:flowEquipos.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+$script:flowEquipos.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
 $script:flowEquipos.AutoScroll    = $true
-$script:flowEquipos.WrapContents  = $false
+$script:flowEquipos.WrapContents  = $true
 $script:flowEquipos.BackColor     = [System.Drawing.Color]::FromArgb(32, 32, 35)
 $script:flowEquipos.Padding       = New-Object System.Windows.Forms.Padding(3, 8, 0, 3)
 $rightPanel.Controls.Add($script:flowEquipos)
