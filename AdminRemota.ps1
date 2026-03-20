@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.8.1 (GUI)
+    Herramienta de administracion remota unificada v2.8.2 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.1
+    2.8.2
 #>
 
 [CmdletBinding()]
@@ -1522,6 +1522,16 @@ $topPanel.Controls.Add($txtEquipo)
 $btnPing = New-FlatButton "Ping" 340 57 60 30 $btnGray
 $topPanel.Controls.Add($btnPing)
 
+# Label de resultado de ping: ONLINE|VPN|IP / ONLINE|CABLE|IP / OFFLINE
+$lblPingResult             = New-Object System.Windows.Forms.Label
+$lblPingResult.Text        = ""
+$lblPingResult.Location    = New-Object System.Drawing.Point(408, 62)
+$lblPingResult.Size        = New-Object System.Drawing.Size(490, 22)
+$lblPingResult.ForeColor   = $white
+$lblPingResult.BackColor   = [System.Drawing.Color]::Transparent
+$lblPingResult.Font        = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$topPanel.Controls.Add($lblPingResult)
+
 # Referencia compartida para que los closures del panel lateral accedan al textbox
 $script:EquipoInputBox = $txtEquipo
 
@@ -1873,13 +1883,32 @@ function Invoke-ActionButton {
 $btnPing.Add_Click({
     $computer = $txtEquipo.Text.Trim()
     if ([string]::IsNullOrEmpty($computer)) { return }
+
+    $lblPingResult.Text      = "Comprobando..."
+    $lblPingResult.ForeColor = [System.Drawing.Color]::Yellow
     Set-Status "Haciendo ping a '$computer'..." ([System.Drawing.Color]::Yellow)
     Write-Sep
+
     if (Test-Connection -ComputerName $computer -Count 1 -Quiet) {
-        Set-Status "  '$computer' esta ONLINE" ([System.Drawing.Color]::LightGreen)
-        Write-Ok "Ping OK -> '$computer' accesible."
+        # Resolver IP y clasificar tipo de conexion
+        $ip = $null
+        try {
+            $ip = [System.Net.Dns]::GetHostAddresses($computer) |
+                  Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+                  Select-Object -First 1 -ExpandProperty IPAddressToString
+        } catch { }
+
+        $tipo  = if ($ip -and ($ip.StartsWith("10.142.") -or $ip.StartsWith("10.99."))) { "VPN" } else { "CABLE" }
+        $ipStr = if ($ip) { $ip } else { "?" }
+
+        $lblPingResult.Text      = "ONLINE  |  $tipo  |  $ipStr"
+        $lblPingResult.ForeColor = [System.Drawing.Color]::LightGreen
+        Set-Status "  '$computer' ONLINE  |  $tipo  |  $ipStr" ([System.Drawing.Color]::LightGreen)
+        Write-Ok "Ping OK -> '$computer' | Tipo: $tipo | IP: $ipStr"
     } else {
-        Set-Status "  '$computer' NO accesible" ([System.Drawing.Color]::Tomato)
+        $lblPingResult.Text      = "OFFLINE"
+        $lblPingResult.ForeColor = [System.Drawing.Color]::Tomato
+        Set-Status "  '$computer' OFFLINE" ([System.Drawing.Color]::Tomato)
         Write-Fail "Ping FAIL -> '$computer' no responde."
     }
     Write-Sep
@@ -2074,7 +2103,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.8.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.8.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
