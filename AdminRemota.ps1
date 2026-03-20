@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.11
+    2.9.0
 #>
 
 [CmdletBinding()]
@@ -36,8 +36,11 @@ Add-Type -Name ConsoleHelper -Namespace Win32 -MemberDefinition @'
 [Win32.ConsoleHelper]::ShowWindow([Win32.ConsoleHelper]::GetConsoleWindow(), 0) | Out-Null
 
 $ErrorActionPreference = "Continue"
-$PSDefaultParameterValues['Invoke-Command:ErrorAction']  = 'SilentlyContinue'
-$PSDefaultParameterValues['Get-CimInstance:ErrorAction'] = 'SilentlyContinue'
+# Timeout global de 30s para conexion y operaciones WinRM.
+# Se aplica automaticamente a todos los Invoke-Command sin SessionOption explicito.
+$script:RemoteSessionOpt = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 30000
+$PSDefaultParameterValues['Invoke-Command:SessionOption']  = $script:RemoteSessionOpt
+$PSDefaultParameterValues['Get-CimInstance:ErrorAction']   = 'SilentlyContinue'
 
 #region ═══════════════════════════════════════════════════════════
 # CONSTANTES Y ESTADO GLOBAL
@@ -239,28 +242,69 @@ function Show-Summary {
 # HELPERS REMOTOS REUTILIZABLES
 #═══════════════════════════════════════════════════════════════════
 
+# ── Devuelve $true si el nombre apunta al equipo local ────────────────────────
+function Test-IsLocal {
+    param([string]$ComputerName)
+    $n = $ComputerName.Trim().ToUpper()
+    return ($n -eq $env:COMPUTERNAME.ToUpper()) -or
+           ($n -eq 'LOCALHOST') -or
+           ($n -eq '127.0.0.1')
+}
+
+# ── Ejecuta un scriptblock en local o remoto segun el objetivo ────────────────
+# Local  : & $ScriptBlock (sin WinRM, sin red)
+# Remoto : Invoke-Command con timeout via $script:RemoteSessionOpt
+# ArgumentList se pasa igual en ambos casos (splatting posicional).
+function Invoke-LocalOrRemote {
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][scriptblock]$ScriptBlock,
+        [object[]]$ArgumentList = @()
+    )
+    if (Test-IsLocal $ComputerName) {
+        if ($ArgumentList.Count -gt 0) { return & $ScriptBlock @ArgumentList }
+        else                           { return & $ScriptBlock }
+    }
+    $opts = @{
+        ComputerName  = $ComputerName
+        ScriptBlock   = $ScriptBlock
+        SessionOption = $script:RemoteSessionOpt
+        ErrorAction   = 'Stop'
+    }
+    if ($ArgumentList.Count -gt 0) { $opts['ArgumentList'] = $ArgumentList }
+    return Invoke-Command @opts
+}
+
 # ── Ejecuta gpupdate /force en equipo remoto, devuelve @{Status;Details} ──────
 function Invoke-RemoteGpupdate {
     param([Parameter(Mandatory)][string]$ComputerName)
-    $ec = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-        (Start-Process gpupdate.exe -ArgumentList "/force /wait:0" -Wait -PassThru).ExitCode
+    try {
+        $ec = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+            (Start-Process gpupdate.exe -ArgumentList "/force /wait:0" -Wait -PassThru).ExitCode
+        }
+        if ($ec -eq 0) { return @{ Status = "OK";   Details = "ExitCode=0" } }
+        else           { return @{ Status = "WARN"; Details = "ExitCode=$ec" } }
+    } catch {
+        return @{ Status = "ERROR"; Details = $_.Exception.Message }
     }
-    if ($ec -eq 0) { return @{ Status = "OK";   Details = "ExitCode=0" } }
-    else            { return @{ Status = "WARN"; Details = "ExitCode=$ec" } }
 }
 
 # ── Comprueba que CcmExec esta Running y el namespace ClientSDK accesible ─────
 #    Devuelve "OK" o un string "ERROR: ..." para mostrar en GUI
 function Test-RemoteSccmReady {
     param([Parameter(Mandatory)][string]$ComputerName)
-    return Invoke-Command -ComputerName $ComputerName -ScriptBlock {
-        $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
-        if (-not $svc)                 { return "ERROR: CcmExec no instalado" }
-        if ($svc.Status -ne "Running") { return "ERROR: CcmExec $($svc.Status)" }
-        $ns = Get-CimInstance -Namespace "root\ccm" -ClassName "__NAMESPACE" `
-                              -Filter "Name='ClientSDK'" -ErrorAction SilentlyContinue
-        if (-not $ns)                  { return "ERROR: namespace root\ccm\ClientSDK inaccesible (WMI?)" }
-        return "OK"
+    try {
+        return Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+            $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
+            if (-not $svc)                 { return "ERROR: CcmExec no instalado" }
+            if ($svc.Status -ne "Running") { return "ERROR: CcmExec $($svc.Status)" }
+            $ns = Get-CimInstance -Namespace "root\ccm" -ClassName "__NAMESPACE" `
+                                  -Filter "Name='ClientSDK'" -ErrorAction SilentlyContinue
+            if (-not $ns)                  { return "ERROR: namespace root\ccm\ClientSDK inaccesible (WMI?)" }
+            return "OK"
+        }
+    } catch {
+        return "ERROR: $_"
     }
 }
 
@@ -452,7 +496,7 @@ function Invoke-MasterCheck {
 
             # Pasar solo Name y Filter al remoto (CesUrls no son necesarias para deteccion)
             $certDefsForRemote = @($script:DivisionalCerts | ForEach-Object { @{ Name=$_.Name; Filter=$_.Filter } })
-            $result = Invoke-Command -ComputerName $script:Target -ArgumentList (,$certDefsForRemote) -ScriptBlock {
+            $result = Invoke-LocalOrRemote -ComputerName $script:Target -ArgumentList (,$certDefsForRemote) -ScriptBlock {
                 param([object[]]$certDefs)
                 $all     = Get-ChildItem "Cert:\LocalMachine\My" -ErrorAction SilentlyContinue
                 $now     = Get-Date
@@ -496,7 +540,7 @@ function Invoke-MasterCheck {
                         $urls    = @($certDef.CesUrls)
                         $ct      = $certType
                         Invoke-Step -Name "Inscribir $ct via certreq+CES" -ScriptBlock {
-                            $remoteResult = Invoke-Command -ComputerName $script:Target `
+                            $remoteResult = Invoke-LocalOrRemote -ComputerName $script:Target `
                                 -ArgumentList $urls, $ct, $script:CertreqEnrollBlock -ScriptBlock {
                                     param($cesUrls, $certType, $enrollBlock)
                                     & $enrollBlock $cesUrls $certType
@@ -521,7 +565,7 @@ function Invoke-MasterCheck {
     } else {
         # Modo Nacional: un cert con el issuer del parametro
         Invoke-Step -Name "Certificado LocalMachine\My" -ScriptBlock {
-            Invoke-Command -ComputerName $script:Target -ArgumentList $script:ExpectedIssuerLike -ScriptBlock {
+            Invoke-LocalOrRemote -ComputerName $script:Target -ArgumentList $script:ExpectedIssuerLike -ScriptBlock {
                 param($issuer)
                 $certs = Get-ChildItem "Cert:\LocalMachine\My" -ErrorAction SilentlyContinue
                 if (-not $certs -or $certs.Count -eq 0) {
@@ -541,7 +585,7 @@ function Invoke-MasterCheck {
 
     # Step 3: success.txt
     Invoke-Step -Name "success.txt" -ScriptBlock {
-        Invoke-Command -ComputerName $script:Target -ScriptBlock {
+        Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock {
             $f = Get-Item "C:\success.txt" -ErrorAction SilentlyContinue
             if (-not $f) { return @{ Status="ERROR"; Details="No existe C:\success.txt" } }
             $s = if ($f.LastWriteTime.Date -eq (Get-Date).Date) { "OK" } else { "WARN" }
@@ -551,7 +595,7 @@ function Invoke-MasterCheck {
 
     # Step 4: Ciclos SCCM
     Invoke-Step -Name "SCCM Client Cycles" -ScriptBlock {
-        Invoke-Command -ComputerName $script:Target -ScriptBlock $script:SccmCyclesBlock
+        Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock $script:SccmCyclesBlock
     }
 
     # Step 5: Centro de Software
@@ -559,7 +603,7 @@ function Invoke-MasterCheck {
         $diag = Test-RemoteSccmReady -ComputerName $script:Target
         if ($diag -ne "OK") { return @{ Status="ERROR"; Details=$diag } }
 
-        Invoke-Command -ComputerName $script:Target -ScriptBlock {
+        Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock {
             $app = Get-CimInstance -Namespace "root\ccm\ClientSDK" -ClassName "CCM_Application" `
                                    -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($app) {
@@ -579,7 +623,7 @@ function Invoke-MasterCheck {
         $checkName    = $swCheck.Name
         $checkFilters = $swCheck.Filters
         Invoke-Step -Name $checkName -ScriptBlock {
-            $found = Invoke-Command -ComputerName $script:Target -ArgumentList (,$checkFilters) -ScriptBlock {
+            $found = Invoke-LocalOrRemote -ComputerName $script:Target -ArgumentList (,$checkFilters) -ScriptBlock {
                 param([string[]]$filters)
                 $paths = @(
                     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -647,7 +691,7 @@ function Invoke-SoftwareCheck {
                 foreach ($app in $notInstalled) {
                     Write-Info "Lanzando instalacion de '$($app.Name)'..."
                     try {
-                        $rv = Invoke-Command -ComputerName $ComputerName `
+                        $rv = Invoke-LocalOrRemote -ComputerName $ComputerName `
                             -ArgumentList $app.Id, $app.Revision, $app.IsMachineTarget -ScriptBlock {
                                 param($appId, $appRev, $isMachine)
                                 $r = Invoke-CimMethod -Namespace "root\ccm\clientsdk" -ClassName "CCM_Application" `
@@ -684,7 +728,7 @@ function Invoke-SoftwareCheck {
 
     # Busqueda en registro local como fallback
     Write-Info "  Comprobando instalacion local en registro (Uninstall)..."
-    $localMatches = Invoke-Command -ComputerName $ComputerName -ArgumentList $appName -ScriptBlock {
+    $localMatches = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $appName -ScriptBlock {
         param($name)
         $paths = @(
             "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -715,7 +759,7 @@ function Invoke-SoftwareCheck {
     Reset-StepResults
 
     Invoke-Step -Name "SCCM Client Cycles" -ScriptBlock {
-        Invoke-Command -ComputerName $script:Target -ScriptBlock $script:SccmCyclesBlock
+        Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock $script:SccmCyclesBlock
     }
 
     if (Confirm-Action "Ejecutar gpupdate /force en '$ComputerName'?") {
@@ -739,7 +783,7 @@ function Invoke-SystemInfo {
     Write-Info "Recopilando informacion del sistema '$ComputerName'..."
     Write-Sep
 
-    $info = Invoke-Command -ComputerName $ComputerName -ScriptBlock {
+    $info = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
         $os   = Get-CimInstance Win32_OperatingSystem
         $cs   = Get-CimInstance Win32_ComputerSystem
         $bios = Get-CimInstance Win32_BIOS
@@ -893,7 +937,7 @@ function Invoke-UsbDriverClean {
     # ── Fase B: Deteccion ────────────────────────────────────────────
     Write-Info "Buscando drivers candidatos en '$ComputerName'..."
 
-    $remoteData = Invoke-Command -ComputerName $ComputerName -ArgumentList $soloFantasmas -ScriptBlock {
+    $remoteData = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $soloFantasmas -ScriptBlock {
         param([bool]$onlyGhost)
         # Get-PnpDevice SIN parametros devuelve todos los dispositivos (presentes + fantasma).
         # -PresentOnly es el switch que RESTRINGE a solo presentes; sin el, se obtiene todo.
@@ -1779,9 +1823,14 @@ function Get-ValidComputer {
             [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         return $null
     }
+    # Equipo local: no necesita Test-Connection ni WinRM
+    if (Test-IsLocal $computer) {
+        Write-Ok "Equipo '$computer' es la maquina local (ejecucion directa)."
+        return $computer
+    }
     Set-Status "Comprobando conectividad con '$computer'..." ([System.Drawing.Color]::Yellow)
     if (-not (Test-Connection -ComputerName $computer -Count 1 -Quiet)) {
-        Write-Fail "El equipo '$computer' no esta accesible."
+        Write-Fail "El equipo '$computer' no responde a ping (ICMP bloqueado o apagado)."
         Set-Status "Equipo no accesible" ([System.Drawing.Color]::Tomato)
         return $null
     }
@@ -1937,7 +1986,7 @@ $btnExecute.Add_Click({
                 -Action {
                     Write-Sep
                     Write-Info "Ciclos de politicas SCCM en '$target'..."
-                    $result = Invoke-Command -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
+                    $result = Invoke-LocalOrRemote -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
                     Write-Sep
                     Append-Output "" $script:White
                     if ($result) {
