@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.10
+    2.8.11
 #>
 
 [CmdletBinding()]
@@ -1651,16 +1651,6 @@ $rightPanel.Dock        = "Right"
 $rightPanel.Width       = 210
 $rightPanel.BackColor   = [System.Drawing.Color]::FromArgb(38, 38, 42)
 $form.Controls.Add($rightPanel)
-
-$rightHeader            = New-Object System.Windows.Forms.Label
-$rightHeader.Text       = "Equipos masterizando"
-$rightHeader.Dock       = "Top"
-$rightHeader.Height     = 32
-$rightHeader.Font       = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
-$rightHeader.ForeColor  = [System.Drawing.Color]::FromArgb(0, 190, 255)
-$rightHeader.BackColor  = [System.Drawing.Color]::FromArgb(28, 28, 28)
-$rightHeader.TextAlign  = "MiddleCenter"
-$rightPanel.Controls.Add($rightHeader)
 
 $rightBtnPanel          = New-Object System.Windows.Forms.Panel
 $rightBtnPanel.Dock     = "Bottom"
