@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.7
+    2.8.8
 #>
 
 [CmdletBinding()]
@@ -1707,20 +1707,16 @@ $script:EquiposFile = Join-Path $PSScriptRoot "equipos_seguimiento.json"
 # (reconocible porque su Tag contiene el nombre del equipo).
 $script:CardClickHandler = [System.EventHandler]{
     param($sender, $e)
-    $ctrl = $sender
-    while ($ctrl -and -not ($ctrl -is [System.Windows.Forms.Panel] -and $ctrl.Tag)) {
-        $ctrl = $ctrl.Parent
-    }
-    if ($ctrl -and $ctrl.Tag) {
-        $script:EquipoInputBox.Text = $ctrl.Tag
-        Set-EquipoSeleccionado $ctrl
+    if ($sender.Tag) {
+        $script:EquipoInputBox.Text = $sender.Tag
+        Set-EquipoSeleccionado $sender
     }
 }
 
 function Set-EquipoSeleccionado {
     param($CardPanel)
     foreach ($c in $script:flowEquipos.Controls) {
-        if ($c -is [System.Windows.Forms.Panel]) {
+        if ($c -is [System.Windows.Forms.Button]) {
             $c.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 58)
         }
     }
@@ -1731,51 +1727,42 @@ function Set-EquipoSeleccionado {
 function New-EquipoCard {
     param([string]$Name)
 
-    $card           = New-Object System.Windows.Forms.Panel
-    $card.Tag       = $Name
-    $card.Width     = 175
-    $card.Height    = 44
-    $card.AutoSize  = $false
-    $card.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 58)
-    $card.Cursor    = "Hand"
-    $card.Margin    = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
-    $card.Padding   = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+    $btn                              = New-Object System.Windows.Forms.Button
+    $btn.Tag                          = $Name
+    $btn.Width                        = 175
+    $btn.Height                       = 44
+    $btn.AutoSize                     = $false
+    $btn.Text                         = "... | $Name"
+    $btn.TextAlign                    = "MiddleLeft"
+    $btn.FlatStyle                    = "Flat"
+    $btn.FlatAppearance.BorderSize    = 0
+    $btn.Font                         = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $btn.ForeColor                    = [System.Drawing.Color]::Gray
+    $btn.BackColor                    = [System.Drawing.Color]::FromArgb(55, 55, 58)
+    $btn.Cursor                       = "Hand"
+    $btn.Margin                       = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+    $btn.Padding                      = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $btn.Add_Click($script:CardClickHandler)
 
-    $lStatus           = New-Object System.Windows.Forms.Label
-    $lStatus.Name      = "lblStatus"
-    $lStatus.Text      = "... | $Name"
-    $lStatus.ForeColor = [System.Drawing.Color]::Gray
-    $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $lStatus.Dock      = "Fill"
-    $lStatus.AutoSize  = $false
-    $lStatus.TextAlign = "MiddleLeft"
-    $lStatus.Cursor    = "Hand"
-    $card.Controls.Add($lStatus)
-
-    $card.Add_Click($script:CardClickHandler)
-    $lStatus.Add_Click($script:CardClickHandler)
-
-    return $card
+    return $btn
 }
 
 function Update-EquipoCard {
     param($CardPanel)
-    $lStatus = $CardPanel.Controls | Where-Object { $_.Name -eq "lblStatus" }
-    if (-not $lStatus) { return }
     $online = Test-Connection -ComputerName $CardPanel.Tag -Count 1 -Quiet -ErrorAction SilentlyContinue
     if ($online) {
-        $lStatus.Text      = "  ONLINE  |  $($CardPanel.Tag)"
-        $lStatus.ForeColor = [System.Drawing.Color]::LightGreen
+        $CardPanel.Text      = "ONLINE | $($CardPanel.Tag)"
+        $CardPanel.ForeColor = [System.Drawing.Color]::LightGreen
     } else {
-        $lStatus.Text      = "  OFFLINE  |  $($CardPanel.Tag)"
-        $lStatus.ForeColor = [System.Drawing.Color]::Tomato
+        $CardPanel.Text      = "OFFLINE | $($CardPanel.Tag)"
+        $CardPanel.ForeColor = [System.Drawing.Color]::Tomato
     }
     [System.Windows.Forms.Application]::DoEvents()
 }
 
 function Refresh-EquipoEstados {
     foreach ($card in @($script:flowEquipos.Controls)) {
-        if ($card -is [System.Windows.Forms.Panel] -and $card.Tag) {
+        if ($card -is [System.Windows.Forms.Button] -and $card.Tag) {
             Update-EquipoCard $card
         }
     }
@@ -1786,7 +1773,7 @@ function Refresh-EquipoEstados {
 function Save-EquipoList {
     try {
         $names = @($script:flowEquipos.Controls |
-            Where-Object { $_ -is [System.Windows.Forms.Panel] -and $_.Tag } |
+            Where-Object { $_ -is [System.Windows.Forms.Button] -and $_.Tag } |
             ForEach-Object { $_.Tag })
         # -InputObject pasa el array completo como un objeto unico → JSON de array valido.
         # Piping elemento a elemento produciria strings JSON separadas (malformado) y
@@ -1806,7 +1793,7 @@ function Load-EquipoList {
         foreach ($name in @($data)) {
             if ([string]::IsNullOrWhiteSpace($name)) { continue }
             $already = $script:flowEquipos.Controls |
-                Where-Object { $_ -is [System.Windows.Forms.Panel] -and $_.Tag -eq $name }
+                Where-Object { $_ -is [System.Windows.Forms.Button] -and $_.Tag -eq $name }
             if ($already) { continue }
             $card = New-EquipoCard $name
             $script:flowEquipos.Controls.Add($card)
@@ -2051,7 +2038,7 @@ $btnAddEquipo.Add_Click({
     $input = $input.Trim().ToUpper()
     if ([string]::IsNullOrEmpty($input)) { return }
     $exists = $script:flowEquipos.Controls | Where-Object {
-        $_ -is [System.Windows.Forms.Panel] -and $_.Tag -eq $input
+        $_ -is [System.Windows.Forms.Button] -and $_.Tag -eq $input
     }
     if ($exists) {
         [System.Windows.Forms.MessageBox]::Show(
