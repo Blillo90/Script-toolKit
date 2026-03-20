@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.6
+    2.8.7
 #>
 
 [CmdletBinding()]
@@ -1734,22 +1734,21 @@ function New-EquipoCard {
     $card           = New-Object System.Windows.Forms.Panel
     $card.Tag       = $Name
     $card.Width     = 175
-    $card.Height    = 52
+    $card.Height    = 44
+    $card.AutoSize  = $false
     $card.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 58)
     $card.Cursor    = "Hand"
-    $card.Margin    = New-Object System.Windows.Forms.Padding(5, 5, 5, 5)
+    $card.Margin    = New-Object System.Windows.Forms.Padding(0, 0, 0, 8)
+    $card.Padding   = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
 
-    # Un unico Label por tarjeta para evitar nombre duplicado y el problema
-    # de BackColor=Transparent en el primer control anadido durante Add_Shown.
-    # Formato: "  ... | PCNAME" → "  ONLINE  |  PCNAME" / "  OFFLINE  |  PCNAME"
     $lStatus           = New-Object System.Windows.Forms.Label
     $lStatus.Name      = "lblStatus"
-    $lStatus.Text      = "  ... | $Name"
+    $lStatus.Text      = "... | $Name"
     $lStatus.ForeColor = [System.Drawing.Color]::Gray
     $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $lStatus.Location  = New-Object System.Drawing.Point(6, 16)
-    $lStatus.Size      = New-Object System.Drawing.Size(163, 20)
-    $lStatus.BackColor = [System.Drawing.Color]::Transparent
+    $lStatus.Dock      = "Fill"
+    $lStatus.AutoSize  = $false
+    $lStatus.TextAlign = "MiddleLeft"
     $lStatus.Cursor    = "Hand"
     $card.Controls.Add($lStatus)
 
