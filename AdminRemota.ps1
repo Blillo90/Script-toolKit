@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.8.2 (GUI)
+    Herramienta de administracion remota unificada v2.8.3 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.2
+    2.8.3
 #>
 
 [CmdletBinding()]
@@ -1739,33 +1739,21 @@ function New-EquipoCard {
     $card.Cursor    = "Hand"
     $card.Margin    = New-Object System.Windows.Forms.Padding(2, 2, 2, 1)
 
-    $lName           = New-Object System.Windows.Forms.Label
-    $lName.Name      = "lblName"
-    $lName.Text      = $Name
-    $lName.ForeColor = [System.Drawing.Color]::White
-    $lName.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $lName.Location  = New-Object System.Drawing.Point(8, 4)
-    $lName.Size      = New-Object System.Drawing.Size(170, 18)
-    $lName.BackColor = [System.Drawing.Color]::Transparent
-    $lName.Cursor    = "Hand"
-    $card.Controls.Add($lName)
-
-    # Linea de estado: "● ONLINE" (verde) o "● OFFLINE" (rojo), en negrita para mayor visibilidad
+    # Un unico Label por tarjeta para evitar nombre duplicado y el problema
+    # de BackColor=Transparent en el primer control anadido durante Add_Shown.
+    # Formato: "  ... | PCNAME" → "  ONLINE  |  PCNAME" / "  OFFLINE  |  PCNAME"
     $lStatus           = New-Object System.Windows.Forms.Label
     $lStatus.Name      = "lblStatus"
     $lStatus.Text      = "  ... | $Name"
     $lStatus.ForeColor = [System.Drawing.Color]::Gray
-    $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
-    $lStatus.Location  = New-Object System.Drawing.Point(6, 29)
-    $lStatus.Size      = New-Object System.Drawing.Size(172, 16)
+    $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lStatus.Location  = New-Object System.Drawing.Point(6, 16)
+    $lStatus.Size      = New-Object System.Drawing.Size(172, 20)
     $lStatus.BackColor = [System.Drawing.Color]::Transparent
     $lStatus.Cursor    = "Hand"
     $card.Controls.Add($lStatus)
 
-    # Registrar el handler compartido en la tarjeta y en sus hijos.
-    # El handler lee el Tag del sender (o de su padre Panel), sin depender de closures.
     $card.Add_Click($script:CardClickHandler)
-    $lName.Add_Click($script:CardClickHandler)
     $lStatus.Add_Click($script:CardClickHandler)
 
     return $card
@@ -1801,7 +1789,11 @@ function Save-EquipoList {
         $names = @($script:flowEquipos.Controls |
             Where-Object { $_ -is [System.Windows.Forms.Panel] -and $_.Tag } |
             ForEach-Object { $_.Tag })
-        $names | ConvertTo-Json -Compress | Set-Content -Path $script:EquiposFile -Encoding UTF8
+        # -InputObject pasa el array completo como un objeto unico → JSON de array valido.
+        # Piping elemento a elemento produciria strings JSON separadas (malformado) y
+        # con array vacio no escribiria nada, dejando el archivo con contenido antiguo.
+        $json = if ($names.Count -gt 0) { ConvertTo-Json -InputObject $names -Compress } else { '[]' }
+        Set-Content -Path $script:EquiposFile -Value $json -Encoding UTF8
     } catch { <# sin permisos de escritura: se ignora silenciosamente #> }
 }
 
@@ -2103,7 +2095,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.8.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.8.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
