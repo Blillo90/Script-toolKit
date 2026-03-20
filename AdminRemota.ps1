@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.9
+    2.8.10
 #>
 
 [CmdletBinding()]
@@ -1703,7 +1703,8 @@ $statusBar.Controls.Add($script:statusLabel)
 # ── Helpers del panel lateral de equipos ─────────────────────────
 
 # Archivo de persistencia en el mismo directorio que el script
-$script:EquiposFile = Join-Path $PSScriptRoot "equipos_seguimiento.json"
+$_equiposDir        = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$script:EquiposFile = Join-Path $_equiposDir "equipos_seguimiento.json"
 
 # ── Helpers del ListView de equipos ──────────────────────────────
 
@@ -2025,7 +2026,7 @@ $btnRemoveEquipo.Add_Click({
             [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         return
     }
-    $script:lvEquipos.Items.Remove($script:lvEquipos.SelectedItems[0])
+    $script:lvEquipos.Items.RemoveAt($script:lvEquipos.SelectedIndices[0])
     Save-EquipoList
 })
 
