@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.5.1 (GUI)
+    Herramienta de administracion remota unificada v2.6.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.5.1
+    2.6.0
 #>
 
 [CmdletBinding()]
@@ -45,6 +45,8 @@ $PSDefaultParameterValues['Get-CimInstance:ErrorAction'] = 'SilentlyContinue'
 
 $script:outputBox       = $null
 $script:statusLabel     = $null
+$script:progressBar     = $null
+$script:progressLabel   = $null
 $script:cancelRequested = $false
 $script:Modo            = "Nacional"   # "Nacional" | "Divisional"
 $script:Target          = ""
@@ -105,6 +107,22 @@ function Set-Status {
     if (-not $script:statusLabel) { return }
     $script:statusLabel.Text      = "  $Msg"
     $script:statusLabel.ForeColor = $Color
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Set-Progress {
+    param([int]$Value, [string]$Label = "")
+    if ($script:progressBar) {
+        $script:progressBar.Value = [Math]::Max(0, [Math]::Min(100, $Value))
+    }
+    if ($script:progressLabel -and $Label -ne "") {
+        $script:progressLabel.Text      = $Label
+        $script:progressLabel.ForeColor = if ($Value -ge 100) {
+            [System.Drawing.Color]::LightGreen
+        } else {
+            $script:Silver
+        }
+    }
     [System.Windows.Forms.Application]::DoEvents()
 }
 
@@ -281,7 +299,9 @@ function Wait-JobWithEvents {
     param(
         [Parameter(Mandatory)]$Job,
         [int]$TimeoutMinutes   = 45,
-        [string]$ProgressLabel = "Operacion"
+        [string]$ProgressLabel = "Operacion",
+        [int]$ProgressFrom     = -1,
+        [int]$ProgressTo       = -1
     )
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     $started  = Get-Date
@@ -290,6 +310,15 @@ function Wait-JobWithEvents {
     while ($Job.State -eq 'Running' -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
         [System.Windows.Forms.Application]::DoEvents()
+
+        # Progreso interpolado por tiempo: avanza rapido al inicio, lento al final (easing cuadratico)
+        if ($ProgressFrom -ge 0 -and $ProgressTo -gt $ProgressFrom -and $script:progressBar) {
+            $fraction = [Math]::Min(0.95, ((Get-Date) - $started).TotalMinutes / $TimeoutMinutes)
+            $adj      = 1.0 - [Math]::Pow(1.0 - $fraction, 2)
+            $val      = [int]($ProgressFrom + ($ProgressTo - $ProgressFrom) * $adj)
+            if ($script:progressBar.Value -ne $val) { $script:progressBar.Value = $val }
+        }
+
         if (((Get-Date) - $lastPing).TotalSeconds -ge 30) {
             $elapsed  = [int]((Get-Date) - $started).TotalSeconds
             Write-Info ("  ... {0} en progreso ({1}s transcurridos)..." -f $ProgressLabel, $elapsed)
@@ -1109,31 +1138,38 @@ function Invoke-UsbDriverClean {
 # OPCION 5 - MANTENIMIENTO DEL SISTEMA (DISM / SFC / CHKDSK)
 #═══════════════════════════════════════════════════════════════════
 
-function Invoke-RemoteDism {
+function Invoke-RemoteRepair {
     param([Parameter(Mandatory)][string]$ComputerName)
 
     Write-Sep
-    Write-Info "DISM /Online /Cleanup-Image /RestoreHealth en '$ComputerName'"
+    Write-Info "Reparacion del sistema en '$ComputerName'"
     Write-Sep
-    Write-Info "  Tiempo estimado: 5-30 minutos (depende del acceso a Windows Update)."
+    Write-Info "  Secuencia: [1/2] DISM /Online /Cleanup-Image /RestoreHealth"
+    Write-Info "             [2/2] sfc /scannow"
+    Write-Info "  Tiempo estimado total: 15-45 minutos."
     Append-Output "" $script:White
 
     if (-not (Confirm-Action (
         "Se va a ejecutar en '$ComputerName':" + "`n`n" +
-        "  DISM /Online /Cleanup-Image /RestoreHealth" + "`n`n" +
-        "  - Puede tardar entre 5 y 30 minutos." + "`n" +
-        "  - Requiere acceso a Windows Update o fuente de reparacion local." + "`n" +
-        "  - No requiere reinicio al finalizar." + "`n`n" +
+        "  [1/2] DISM /Online /Cleanup-Image /RestoreHealth" + "`n" +
+        "  [2/2] sfc /scannow" + "`n`n" +
+        "  - Tiempo estimado: 15-45 minutos." + "`n" +
+        "  - DISM repara la imagen del sistema (WinSxS)." + "`n" +
+        "  - SFC repara archivos protegidos del sistema operativo." + "`n" +
+        "  - No requiere reinicio (salvo que SFC encuentre archivos en uso)." + "`n`n" +
         "Continuar?"
     ))) {
         Write-Warn "Operacion cancelada por el usuario."
         return
     }
 
-    Write-Info "Lanzando DISM en '$ComputerName'..."
+    # ── FASE 1: DISM ─────────────────────────────────────────────────────────────
+    Write-Sep
+    Write-Info "[1/2] Iniciando DISM /Online /Cleanup-Image /RestoreHealth..."
+    Set-Progress 0 "[1/2] DISM en ejecucion..."
     $script:outputBox.Update()
 
-    $job = Start-Job -ArgumentList $ComputerName -ScriptBlock {
+    $jobDism = Start-Job -ArgumentList $ComputerName -ScriptBlock {
         param($computer)
         try {
             $res = Invoke-Command -ComputerName $computer -ErrorAction SilentlyContinue -ScriptBlock {
@@ -1146,73 +1182,55 @@ function Invoke-RemoteDism {
         }
     }
 
-    $ok = Wait-JobWithEvents $job -TimeoutMinutes 60 -ProgressLabel "DISM"
-    if (-not $ok) {
-        Write-Fail "DISM TIMEOUT (>60 min). La operacion puede seguir ejecutandose en '$ComputerName'."
+    $okDism = Wait-JobWithEvents $jobDism -TimeoutMinutes 60 -ProgressLabel "DISM" `
+                                          -ProgressFrom 0 -ProgressTo 48
+    if (-not $okDism) {
+        Write-Fail "[1/2] DISM TIMEOUT (>60 min). Puede seguir ejecutandose en '$ComputerName'."
         Write-Warn "  Comprueba el log en: C:\Windows\Logs\DISM\dism.log"
+        Set-Progress 0 "DISM timeout"
         Write-Sep; Append-Output "" $script:White
         return
     }
 
-    $rem = Receive-Job $job; Remove-Job $job -Force
+    $remDism = Receive-Job $jobDism; Remove-Job $jobDism -Force
 
-    if ($null -eq $rem) {
-        Write-Fail "Sin respuesta remota. Verifica la conectividad WinRM con '$ComputerName'."
+    if ($null -eq $remDism) {
+        Write-Fail "[1/2] Sin respuesta remota (DISM). Verifica WinRM con '$ComputerName'."
+        Set-Progress 0 "Sin respuesta"
         Write-Sep; Append-Output "" $script:White
         return
     }
 
-    Write-Sep
-    Write-Info "Salida de DISM:"
-    foreach ($line in ($rem.Output -split "`n" | Where-Object { $_.Trim() -ne "" })) {
+    # Mostrar salida DISM
+    Write-Info "[1/2] Salida de DISM:"
+    foreach ($line in ($remDism.Output -split "`n" | Where-Object { $_.Trim() -ne "" })) {
         $l      = $line.Trim()
-        $lColor = if     ($l -match "Error|fallo|FAIL")              { [System.Drawing.Color]::Tomato      }
-                  elseif ($l -match "Warning|Advertencia")           { [System.Drawing.Color]::Yellow      }
+        $lColor = if     ($l -match "Error|fallo|FAIL")               { [System.Drawing.Color]::Tomato      }
+                  elseif ($l -match "Warning|Advertencia")            { [System.Drawing.Color]::Yellow      }
                   elseif ($l -match "completado|correctamente|100\.0%") { [System.Drawing.Color]::LightGreen }
-                  else                                                { $script:Silver                      }
+                  else                                                 { $script:Silver                      }
         Append-Output "    $l" $lColor
     }
-    Write-Sep
-
-    if ($rem.ExitCode -eq 0) {
-        Write-Ok "DISM completado correctamente. ExitCode=0."
+    if ($remDism.ExitCode -eq 0) {
+        Write-Ok   "[1/2] DISM completado. ExitCode=0."
     } else {
-        Write-Fail "DISM finalizo con ExitCode=$($rem.ExitCode). Revisa: C:\Windows\Logs\DISM\dism.log"
+        Write-Fail "[1/2] DISM ExitCode=$($remDism.ExitCode). Revisa: C:\Windows\Logs\DISM\dism.log"
     }
-    Append-Output "" $script:White
-}
-
-function Invoke-RemoteSfc {
-    param([Parameter(Mandatory)][string]$ComputerName)
-
-    Write-Sep
-    Write-Info "SFC /scannow en '$ComputerName'"
-    Write-Sep
-    Write-Info "  Tiempo estimado: 5-15 minutos."
+    Set-Progress 50 "[1/2] DISM completado - Iniciando SFC..."
     Append-Output "" $script:White
 
-    if (-not (Confirm-Action (
-        "Se va a ejecutar en '$ComputerName':" + "`n`n" +
-        "  sfc /scannow" + "`n`n" +
-        "  - Verifica la integridad de archivos protegidos del sistema." + "`n" +
-        "  - Puede tardar entre 5 y 15 minutos." + "`n" +
-        "  - Puede requerir reinicio si hay archivos en uso que reparar." + "`n`n" +
-        "Continuar?"
-    ))) {
-        Write-Warn "Operacion cancelada por el usuario."
-        return
-    }
-
-    Write-Info "Lanzando SFC en '$ComputerName'..."
+    # ── FASE 2: SFC ──────────────────────────────────────────────────────────────
+    Write-Sep
+    Write-Info "[2/2] Iniciando sfc /scannow..."
+    Set-Progress 50 "[2/2] SFC en ejecucion..."
     $script:outputBox.Update()
 
-    $job = Start-Job -ArgumentList $ComputerName -ScriptBlock {
+    $jobSfc = Start-Job -ArgumentList $ComputerName -ScriptBlock {
         param($computer)
         try {
             $res = Invoke-Command -ComputerName $computer -ErrorAction SilentlyContinue -ScriptBlock {
-                # sfc /scannow puede producir salida UTF-16 ilegible en sesion WinRM.
-                # Se captura la salida directa (best-effort) y el tail del log CBS
-                # (ASCII, mas fiable) para dar al usuario informacion util.
+                # sfc puede producir salida UTF-16 ilegible via WinRM; se limpia despues.
+                # El log CBS es la fuente fiable del resultado real.
                 $out = sfc /scannow 2>&1
                 $cbs = Get-Content "$env:windir\Logs\CBS\CBS.log" -Tail 20 -ErrorAction SilentlyContinue
                 return @{
@@ -1227,55 +1245,62 @@ function Invoke-RemoteSfc {
         }
     }
 
-    $ok = Wait-JobWithEvents $job -TimeoutMinutes 30 -ProgressLabel "SFC"
-    if (-not $ok) {
-        Write-Fail "SFC TIMEOUT (>30 min). La operacion puede seguir ejecutandose en '$ComputerName'."
+    $okSfc = Wait-JobWithEvents $jobSfc -TimeoutMinutes 30 -ProgressLabel "SFC" `
+                                        -ProgressFrom 50 -ProgressTo 98
+    if (-not $okSfc) {
+        Write-Fail "[2/2] SFC TIMEOUT (>30 min). Puede seguir ejecutandose en '$ComputerName'."
+        Set-Progress 50 "SFC timeout"
         Write-Sep; Append-Output "" $script:White
         return
     }
 
-    $rem = Receive-Job $job; Remove-Job $job -Force
+    $remSfc = Receive-Job $jobSfc; Remove-Job $jobSfc -Force
 
-    if ($null -eq $rem) {
-        Write-Fail "Sin respuesta remota. Verifica la conectividad WinRM con '$ComputerName'."
+    if ($null -eq $remSfc) {
+        Write-Fail "[2/2] Sin respuesta remota (SFC). Verifica WinRM con '$ComputerName'."
+        Set-Progress 50 "Sin respuesta SFC"
         Write-Sep; Append-Output "" $script:White
         return
     }
 
-    Write-Sep
-
-    # Salida directa: limpiar caracteres no ASCII (artefactos UTF-16) y mostrar si hay contenido util
-    $sfcOut = ($rem.Output -replace "[^\x20-\x7E\r\n]", "").Trim()
+    # Mostrar salida SFC (limpiar artefactos UTF-16) y log CBS
+    Write-Info "[2/2] Salida SFC:"
+    $sfcOut = ($remSfc.Output -replace "[^\x20-\x7E\r\n]", "").Trim()
     if ($sfcOut) {
-        Write-Info "Salida SFC (ultimas lineas):"
         foreach ($line in ($sfcOut -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 8)) {
             Append-Output "    $($line.Trim())" $script:Silver
         }
     }
-
-    # Log CBS: mas fiable que stdout para el resultado real de SFC
-    if ($rem.CbsTail) {
-        Write-Info "Tail del log CBS (C:\Windows\Logs\CBS\CBS.log):"
-        foreach ($line in ($rem.CbsTail -split "`n" | Where-Object { $_.Trim() })) {
+    if ($remSfc.CbsTail) {
+        Write-Info "[2/2] Tail del log CBS:"
+        foreach ($line in ($remSfc.CbsTail -split "`n" | Where-Object { $_.Trim() })) {
             $l      = $line.Trim()
-            $lColor = if     ($l -match "error|fail|corrupt")  { [System.Drawing.Color]::Tomato      }
-                      elseif ($l -match "repaired|fixed|reparo") { [System.Drawing.Color]::LightGreen }
-                      else                                      { $script:Silver                      }
+            $lColor = if     ($l -match "error|fail|corrupt")    { [System.Drawing.Color]::Tomato      }
+                      elseif ($l -match "repaired|fixed|reparo")  { [System.Drawing.Color]::LightGreen }
+                      else                                        { $script:Silver                      }
             Append-Output "    $l" $lColor
         }
     }
-
-    Write-Sep
-    switch ($rem.ExitCode) {
-        0 { Write-Ok   "SFC completado. ExitCode=0 (sin errores o reparaciones aplicadas correctamente)." }
-        1 { Write-Warn "SFC encontro archivos danados que no pudo reparar. ExitCode=1." }
-        2 { Write-Ok   "SFC realizo limpieza de disco. ExitCode=2." }
-        3 { Write-Warn "SFC no pudo completar el escaneo. Puede requerir reinicio. ExitCode=3." }
-        default { Write-Fail "SFC finalizo con ExitCode=$($rem.ExitCode). Revisa: C:\Windows\Logs\CBS\CBS.log" }
+    switch ($remSfc.ExitCode) {
+        0 { Write-Ok   "[2/2] SFC completado. ExitCode=0." }
+        1 { Write-Warn "[2/2] SFC: archivos danados no reparados. ExitCode=1." }
+        2 { Write-Ok   "[2/2] SFC: limpieza realizada. ExitCode=2." }
+        3 { Write-Warn "[2/2] SFC no completo el escaneo. Puede requerir reinicio. ExitCode=3." }
+        default { Write-Fail "[2/2] SFC ExitCode=$($remSfc.ExitCode). Revisa: C:\Windows\Logs\CBS\CBS.log" }
     }
-    Write-Info "  Log completo en: C:\Windows\Logs\CBS\CBS.log"
+
+    # ── Resumen ───────────────────────────────────────────────────────────────────
+    Set-Progress 100 "Reparacion completada"
+    Write-Sep
+    Write-Info "Resumen reparacion '$ComputerName':"
+    if ($remDism.ExitCode -eq 0) { Write-Ok   "  DISM : Completado (ExitCode=0)" }
+    else                          { Write-Warn "  DISM : Con avisos  (ExitCode=$($remDism.ExitCode))" }
+    $sfcOk = $remSfc.ExitCode -eq 0 -or $remSfc.ExitCode -eq 2
+    if ($sfcOk) { Write-Ok   "  SFC  : Completado (ExitCode=$($remSfc.ExitCode))" }
+    else         { Write-Warn "  SFC  : Con avisos  (ExitCode=$($remSfc.ExitCode))" }
     Append-Output "" $script:White
 }
+
 
 function Invoke-RemoteChkdsk {
     param([Parameter(Mandatory)][string]$ComputerName)
@@ -1455,7 +1480,7 @@ function New-FlatButton {
 # ── Panel superior ────────────────────────────────────────────────
 $topPanel           = New-Object System.Windows.Forms.Panel
 $topPanel.Dock      = "Top"
-$topPanel.Height    = 225
+$topPanel.Height    = 215
 $topPanel.BackColor = $bgPanel
 $form.Controls.Add($topPanel)
 
@@ -1540,19 +1565,49 @@ $btnUsb      = New-FlatButton "  Borrar USB"       525 120 130 28 $btnRed
 $btnClear    = New-FlatButton "  Limpiar"          670 120  75 28 $btnGray
 $btnCancel   = New-FlatButton "  Cancelar"         750 120  90 28 ([System.Drawing.Color]::FromArgb(200, 100, 0))
 
-# ── Fila 2: acciones rapidas ──────────────────────────────────────
-$btnRestart      = New-FlatButton "  Reiniciar"         10 153 140 28 ([System.Drawing.Color]::FromArgb(160,  80,  0))
-$btnGPUpdate     = New-FlatButton "  GPUpdate /force"  155 153 155 28 ([System.Drawing.Color]::FromArgb(  0, 100, 140))
-$btnPolicyCycles = New-FlatButton "  Ciclos SCCM"      315 153 150 28 ([System.Drawing.Color]::FromArgb( 60,  80, 130))
+# ── Fila 2: reinicio (boton visible) + desplegable de mantenimiento ──
+$btnRestart = New-FlatButton "  Reiniciar" 10 153 140 28 ([System.Drawing.Color]::FromArgb(160, 80, 0))
 
-# ── Fila 3: mantenimiento del sistema ─────────────────────────────
-$btnDism    = New-FlatButton "  DISM /Restore"    10 186 175 28 ([System.Drawing.Color]::FromArgb( 30,  80, 130))
-$btnSfc     = New-FlatButton "  SFC /scannow"    190 186 165 28 ([System.Drawing.Color]::FromArgb( 30,  80, 130))
-$btnChkdsk  = New-FlatButton "  ChkDsk /r"       360 186 145 28 ([System.Drawing.Color]::FromArgb(120,  70,  10))
+$cboMaintenance                  = New-Object System.Windows.Forms.ComboBox
+$cboMaintenance.DropDownStyle    = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+$cboMaintenance.BackColor        = [System.Drawing.Color]::FromArgb(55, 55, 58)
+$cboMaintenance.ForeColor        = $white
+$cboMaintenance.Font             = $fontSmall
+$cboMaintenance.Location         = New-Object System.Drawing.Point(155, 156)
+$cboMaintenance.Size             = New-Object System.Drawing.Size(385, 26)
+$cboMaintenance.Items.AddRange(@(
+    "GPUpdate /force",
+    "Ciclos SCCM",
+    "Reparacion sistema (DISM + SFC)",
+    "ChkDsk /r"
+))
+$cboMaintenance.SelectedIndex = 0
+$topPanel.Controls.Add($cboMaintenance)
+
+$btnExecute = New-FlatButton "  Ejecutar" 545 153 110 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
+
+# ── Fila 3: barra de progreso (DISM + SFC) ────────────────────────
+$script:progressBar          = New-Object System.Windows.Forms.ProgressBar
+$script:progressBar.Location = New-Object System.Drawing.Point(10, 186)
+$script:progressBar.Size     = New-Object System.Drawing.Size(535, 18)
+$script:progressBar.Minimum  = 0
+$script:progressBar.Maximum  = 100
+$script:progressBar.Value    = 0
+$script:progressBar.Style    = [System.Windows.Forms.ProgressBarStyle]::Continuous
+$topPanel.Controls.Add($script:progressBar)
+
+$script:progressLabel           = New-Object System.Windows.Forms.Label
+$script:progressLabel.Location  = New-Object System.Drawing.Point(552, 186)
+$script:progressLabel.Size      = New-Object System.Drawing.Size(260, 18)
+$script:progressLabel.ForeColor = $silver
+$script:progressLabel.Font      = $fontSmall
+$script:progressLabel.Text      = ""
+$script:progressLabel.TextAlign = "MiddleLeft"
+$topPanel.Controls.Add($script:progressLabel)
 
 $btnCancel.Enabled = $false
 
-foreach ($b in @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnClear,$btnCancel,$btnRestart,$btnGPUpdate,$btnPolicyCycles,$btnDism,$btnSfc,$btnChkdsk)) {
+foreach ($b in @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnClear,$btnCancel,$btnRestart,$btnExecute)) {
     $topPanel.Controls.Add($b)
 }
 
@@ -1587,12 +1642,13 @@ $statusBar.Controls.Add($script:statusLabel)
 # ── Helpers de control de UI ──────────────────────────────────────
 
 # Lista de botones de accion (todos excepto Cancelar y Limpiar)
-$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnGPUpdate,$btnPolicyCycles,$btnDism,$btnSfc,$btnChkdsk,$btnPing)
+$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnExecute,$btnPing)
 
 function Set-ButtonsEnabled {
     param([bool]$Enabled)
     foreach ($b in $script:ActionButtons) { $b.Enabled = $Enabled }
-    $btnCancel.Enabled = -not $Enabled
+    $cboMaintenance.Enabled = $Enabled
+    $btnCancel.Enabled      = -not $Enabled
 }
 
 function Get-ValidComputer {
@@ -1714,81 +1770,68 @@ $btnRestart.Add_Click({
     Set-ButtonsEnabled $true
 })
 
-$btnGPUpdate.Add_Click({
+$btnExecute.Add_Click({
     $target = Get-ValidComputer
     if (-not $target) { return }
-    Invoke-ActionButton -ComputerName $target -UseCancel $false `
-        -StatusMsg "Ejecutando gpupdate /force en '$target'..." `
-        -Action {
-            Write-Sep
-            Write-Info "gpupdate /force en '$target'..."
-            $res = Invoke-RemoteGpupdate -ComputerName $target
-            Write-Sep
-            Append-Output "" $script:White
-            if ($res -and $res.Status -eq "OK") {
-                Write-Ok "gpupdate completado correctamente ($($res.Details))."
-                Set-Status "GPUpdate OK en '$target'" ([System.Drawing.Color]::LightGreen)
-            } else {
-                $detail = if ($res) { $res.Details } else { "Sin respuesta remota" }
-                Write-Warn "gpupdate: $detail."
-                Set-Status "GPUpdate WARN en '$target'" ([System.Drawing.Color]::Yellow)
-            }
-        }
-})
-
-$btnPolicyCycles.Add_Click({
-    $target = Get-ValidComputer
-    if (-not $target) { return }
-    Invoke-ActionButton -ComputerName $target -UseCancel $false `
-        -StatusMsg "Lanzando ciclos SCCM en '$target'..." `
-        -Action {
-            Write-Sep
-            Write-Info "Ciclos de politicas SCCM en '$target'..."
-            $result = Invoke-Command -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
-            Write-Sep
-            Append-Output "" $script:White
-            if ($result) {
-                switch ($result.Status) {
-                    "OK"    { Write-Ok   "Ciclos completados: $($result.Details)"
-                              Set-Status "Ciclos SCCM OK en '$target'" ([System.Drawing.Color]::LightGreen) }
-                    "WARN"  { Write-Warn "Ciclos con avisos: $($result.Details)"
-                              Set-Status "Ciclos SCCM con avisos" ([System.Drawing.Color]::Yellow) }
-                    "ERROR" { Write-Fail "Ciclos con errores: $($result.Details)"
-                              Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato) }
+    $opcion = $cboMaintenance.SelectedItem
+    switch ($opcion) {
+        "GPUpdate /force" {
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "Ejecutando gpupdate /force en '$target'..." `
+                -Action {
+                    Write-Sep
+                    Write-Info "gpupdate /force en '$target'..."
+                    $res = Invoke-RemoteGpupdate -ComputerName $target
+                    Write-Sep
+                    Append-Output "" $script:White
+                    if ($res -and $res.Status -eq "OK") {
+                        Write-Ok "gpupdate completado correctamente ($($res.Details))."
+                        Set-Status "GPUpdate OK en '$target'" ([System.Drawing.Color]::LightGreen)
+                    } else {
+                        $detail = if ($res) { $res.Details } else { "Sin respuesta remota" }
+                        Write-Warn "gpupdate: $detail."
+                        Set-Status "GPUpdate WARN en '$target'" ([System.Drawing.Color]::Yellow)
+                    }
                 }
-            } else {
-                Write-Warn "Sin respuesta del cliente SCCM. Verifica que CcmExec esta activo."
-                Write-Info "  Verifica que el cliente SCCM esta instalado y activo."
-                Set-Status "Sin respuesta SCCM en '$target'" ([System.Drawing.Color]::Yellow)
-            }
         }
-})
-
-$btnDism.Add_Click({
-    $target = Get-ValidComputer
-    if (-not $target) { return }
-    Invoke-ActionButton -ComputerName $target -UseCancel $false `
-        -StatusMsg "Ejecutando DISM /RestoreHealth en '$target'..." `
-        -Action    { Invoke-RemoteDism -ComputerName $target }
-    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
-})
-
-$btnSfc.Add_Click({
-    $target = Get-ValidComputer
-    if (-not $target) { return }
-    Invoke-ActionButton -ComputerName $target -UseCancel $false `
-        -StatusMsg "Ejecutando SFC /scannow en '$target'..." `
-        -Action    { Invoke-RemoteSfc -ComputerName $target }
-    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
-})
-
-$btnChkdsk.Add_Click({
-    $target = Get-ValidComputer
-    if (-not $target) { return }
-    Invoke-ActionButton -ComputerName $target -UseCancel $false `
-        -StatusMsg "Ejecutando ChkDsk /r en '$target'..." `
-        -Action    { Invoke-RemoteChkdsk -ComputerName $target }
-    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+        "Ciclos SCCM" {
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "Lanzando ciclos SCCM en '$target'..." `
+                -Action {
+                    Write-Sep
+                    Write-Info "Ciclos de politicas SCCM en '$target'..."
+                    $result = Invoke-Command -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
+                    Write-Sep
+                    Append-Output "" $script:White
+                    if ($result) {
+                        switch ($result.Status) {
+                            "OK"    { Write-Ok   "Ciclos completados: $($result.Details)"
+                                      Set-Status "Ciclos SCCM OK en '$target'" ([System.Drawing.Color]::LightGreen) }
+                            "WARN"  { Write-Warn "Ciclos con avisos: $($result.Details)"
+                                      Set-Status "Ciclos SCCM con avisos" ([System.Drawing.Color]::Yellow) }
+                            "ERROR" { Write-Fail "Ciclos con errores: $($result.Details)"
+                                      Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato) }
+                        }
+                    } else {
+                        Write-Warn "Sin respuesta del cliente SCCM. Verifica que CcmExec esta activo."
+                        Set-Status "Sin respuesta SCCM en '$target'" ([System.Drawing.Color]::Yellow)
+                    }
+                }
+        }
+        "Reparacion sistema (DISM + SFC)" {
+            Set-Progress 0 ""
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "Reparacion del sistema en '$target'..." `
+                -Action    { Invoke-RemoteRepair -ComputerName $target }
+            Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+        }
+        "ChkDsk /r" {
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "Ejecutando ChkDsk /r en '$target'..." `
+                -Action    { Invoke-RemoteChkdsk -ComputerName $target }
+            Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+        }
+    }
 })
 
 $btnClear.Add_Click({
@@ -1813,7 +1856,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.5.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.6.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
