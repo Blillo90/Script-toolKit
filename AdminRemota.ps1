@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.6.0 (GUI)
+    Herramienta de administracion remota unificada v2.7.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.6.0
+    2.7.0
 #>
 
 [CmdletBinding()]
@@ -48,6 +48,7 @@ $script:statusLabel     = $null
 $script:progressBar     = $null
 $script:progressLabel   = $null
 $script:cancelRequested = $false
+$script:EquipoSelCard   = $null        # tarjeta actualmente seleccionada en el panel lateral
 $script:Modo            = "Nacional"   # "Nacional" | "Divisional"
 $script:Target          = ""
 $script:StepResults     = New-Object System.Collections.Generic.List[object]
@@ -1446,8 +1447,8 @@ $fontSmall = New-Object System.Drawing.Font("Segoe UI",   9)
 # ── Formulario ───────────────────────────────────────────────────
 $form                 = New-Object System.Windows.Forms.Form
 $form.Text            = "Administracion Remota  |  Accenture / Airbus"
-$form.Size            = New-Object System.Drawing.Size(920, 680)
-$form.MinimumSize     = New-Object System.Drawing.Size(720, 500)
+$form.Size            = New-Object System.Drawing.Size(1130, 680)
+$form.MinimumSize     = New-Object System.Drawing.Size(920, 500)
 $form.BackColor       = $bgDark
 $form.ForeColor       = $white
 $form.Font            = $fontUI
@@ -1520,6 +1521,9 @@ $topPanel.Controls.Add($txtEquipo)
 
 $btnPing = New-FlatButton "Ping" 340 57 60 30 $btnGray
 $topPanel.Controls.Add($btnPing)
+
+# Referencia compartida para que los closures del panel lateral accedan al textbox
+$script:EquipoInputBox = $txtEquipo
 
 # Selector de modo Nacional / Divisional
 $lblModo           = New-Object System.Windows.Forms.Label
@@ -1629,6 +1633,48 @@ $statusBar.Dock     = "Bottom"
 $statusBar.Height   = 24
 $statusBar.BackColor= $accent
 $form.Controls.Add($statusBar)
+
+# ── Panel lateral derecho (equipos en seguimiento) ────────────────
+# Se anade ANTES de BringToFront para que el Dock=Right se resuelva
+# antes que el Dock=Fill del outputBox, dejando la columna derecha libre.
+$rightPanel             = New-Object System.Windows.Forms.Panel
+$rightPanel.Dock        = "Right"
+$rightPanel.Width       = 210
+$rightPanel.BackColor   = [System.Drawing.Color]::FromArgb(38, 38, 42)
+$form.Controls.Add($rightPanel)
+
+$rightHeader            = New-Object System.Windows.Forms.Label
+$rightHeader.Text       = "EQUIPOS"
+$rightHeader.Dock       = "Top"
+$rightHeader.Height     = 26
+$rightHeader.Font       = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+$rightHeader.ForeColor  = [System.Drawing.Color]::FromArgb(0, 190, 255)
+$rightHeader.BackColor  = [System.Drawing.Color]::FromArgb(28, 28, 28)
+$rightHeader.TextAlign  = "MiddleCenter"
+$rightPanel.Controls.Add($rightHeader)
+
+$rightBtnPanel          = New-Object System.Windows.Forms.Panel
+$rightBtnPanel.Dock     = "Bottom"
+$rightBtnPanel.Height   = 96
+$rightBtnPanel.BackColor= [System.Drawing.Color]::FromArgb(28, 28, 28)
+$rightPanel.Controls.Add($rightBtnPanel)
+
+$btnAddEquipo      = New-FlatButton "Anadir equipo"      3  3 202 26 ([System.Drawing.Color]::FromArgb(0, 100, 50))
+$btnRemoveEquipo   = New-FlatButton "Quitar selec."      3 33 202 26 $btnGray
+$btnRefreshEquipos = New-FlatButton "Refrescar estado"   3 63 202 26 ([System.Drawing.Color]::FromArgb(30, 60, 110))
+$rightBtnPanel.Controls.Add($btnAddEquipo)
+$rightBtnPanel.Controls.Add($btnRemoveEquipo)
+$rightBtnPanel.Controls.Add($btnRefreshEquipos)
+
+$script:flowEquipos               = New-Object System.Windows.Forms.FlowLayoutPanel
+$script:flowEquipos.Dock          = "Fill"
+$script:flowEquipos.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+$script:flowEquipos.AutoScroll    = $true
+$script:flowEquipos.WrapContents  = $false
+$script:flowEquipos.BackColor     = [System.Drawing.Color]::FromArgb(32, 32, 35)
+$script:flowEquipos.Padding       = New-Object System.Windows.Forms.Padding(3, 3, 0, 3)
+$rightPanel.Controls.Add($script:flowEquipos)
+
 $script:outputBox.BringToFront()   # Fill solo ocupa el espacio restante
 
 $script:statusLabel           = New-Object System.Windows.Forms.Label
@@ -1638,6 +1684,88 @@ $script:statusLabel.ForeColor = $white
 $script:statusLabel.Font      = $fontSmall
 $script:statusLabel.TextAlign = "MiddleLeft"
 $statusBar.Controls.Add($script:statusLabel)
+
+# ── Helpers del panel lateral de equipos ─────────────────────────
+
+function Set-EquipoSeleccionado {
+    param($CardPanel)
+    foreach ($c in $script:flowEquipos.Controls) {
+        if ($c -is [System.Windows.Forms.Panel]) {
+            $c.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 58)
+        }
+    }
+    if ($CardPanel) { $CardPanel.BackColor = [System.Drawing.Color]::FromArgb(0, 80, 140) }
+    $script:EquipoSelCard = $CardPanel
+}
+
+function New-EquipoCard {
+    param([string]$Name)
+
+    $card           = New-Object System.Windows.Forms.Panel
+    $card.Tag       = $Name
+    $card.Width     = 185
+    $card.Height    = 50
+    $card.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 58)
+    $card.Cursor    = "Hand"
+    $card.Margin    = New-Object System.Windows.Forms.Padding(2, 2, 2, 1)
+
+    $lName           = New-Object System.Windows.Forms.Label
+    $lName.Name      = "lblName"
+    $lName.Text      = $Name
+    $lName.ForeColor = [System.Drawing.Color]::White
+    $lName.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $lName.Location  = New-Object System.Drawing.Point(8, 5)
+    $lName.Size      = New-Object System.Drawing.Size(170, 18)
+    $lName.BackColor = [System.Drawing.Color]::Transparent
+    $lName.Cursor    = "Hand"
+    $card.Controls.Add($lName)
+
+    $lStatus           = New-Object System.Windows.Forms.Label
+    $lStatus.Name      = "lblStatus"
+    $lStatus.Text      = " Pendiente..."
+    $lStatus.ForeColor = [System.Drawing.Color]::Gray
+    $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
+    $lStatus.Location  = New-Object System.Drawing.Point(8, 27)
+    $lStatus.Size      = New-Object System.Drawing.Size(170, 16)
+    $lStatus.BackColor = [System.Drawing.Color]::Transparent
+    $lStatus.Cursor    = "Hand"
+    $card.Controls.Add($lStatus)
+
+    # Cada invocacion de New-EquipoCard tiene su propio scope con su propio $card.
+    # El closure captura esa instancia concreta: varios click handlers funcionan de forma independiente.
+    $clickHandler = {
+        $script:EquipoInputBox.Text = $card.Tag
+        Set-EquipoSeleccionado $card
+    }
+    $card.Add_Click($clickHandler)
+    $lName.Add_Click($clickHandler)
+    $lStatus.Add_Click($clickHandler)
+
+    return $card
+}
+
+function Update-EquipoCard {
+    param($CardPanel)
+    $lStatus = $CardPanel.Controls | Where-Object { $_.Name -eq "lblStatus" }
+    if (-not $lStatus) { return }
+    $online = Test-Connection -ComputerName $CardPanel.Tag -Count 1 -Quiet -ErrorAction SilentlyContinue
+    if ($online) {
+        $lStatus.Text      = " Online"
+        $lStatus.ForeColor = [System.Drawing.Color]::LightGreen
+    } else {
+        $lStatus.Text      = " Offline"
+        $lStatus.ForeColor = [System.Drawing.Color]::Tomato
+    }
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Refresh-EquipoEstados {
+    foreach ($card in @($script:flowEquipos.Controls)) {
+        if ($card -is [System.Windows.Forms.Panel] -and $card.Tag) {
+            Update-EquipoCard $card
+        }
+    }
+}
 
 # ── Helpers de control de UI ──────────────────────────────────────
 
@@ -1850,13 +1978,55 @@ $btnCancel.Add_Click({
     [System.Windows.Forms.Application]::DoEvents()
 })
 
+# ── Eventos del panel lateral de equipos ─────────────────────────
+
+$btnAddEquipo.Add_Click({
+    $input = Get-Input "Nombre del equipo a anadir:" "Anadir equipo"
+    $input = $input.Trim()
+    if ([string]::IsNullOrEmpty($input)) { return }
+    $exists = $script:flowEquipos.Controls | Where-Object {
+        $_ -is [System.Windows.Forms.Panel] -and $_.Tag -eq $input
+    }
+    if ($exists) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "'$input' ya esta en la lista.",
+            "Duplicado",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+        return
+    }
+    $card = New-EquipoCard $input
+    $script:flowEquipos.Controls.Add($card)
+    Update-EquipoCard $card
+})
+
+$btnRemoveEquipo.Add_Click({
+    if (-not $script:EquipoSelCard) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Selecciona un equipo de la lista primero.",
+            "Nada seleccionado",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+        return
+    }
+    $script:flowEquipos.Controls.Remove($script:EquipoSelCard)
+    $script:EquipoSelCard = $null
+})
+
+$btnRefreshEquipos.Add_Click({
+    if ($script:flowEquipos.Controls.Count -eq 0) { return }
+    Set-Status "Refrescando estado de equipos..." ([System.Drawing.Color]::Yellow)
+    Refresh-EquipoEstados
+    Set-Status "Listo" $white
+})
+
 # Enter en campo equipo -> ping
 $txtEquipo.Add_KeyDown({
     if ($_.KeyCode -eq "Enter") { $btnPing.PerformClick() }
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.6.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.7.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
