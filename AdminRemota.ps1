@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.8.0 (GUI)
+    Herramienta de administracion remota unificada v2.8.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.8.0
+    2.8.1
 #>
 
 [CmdletBinding()]
@@ -1644,7 +1644,7 @@ $rightPanel.BackColor   = [System.Drawing.Color]::FromArgb(38, 38, 42)
 $form.Controls.Add($rightPanel)
 
 $rightHeader            = New-Object System.Windows.Forms.Label
-$rightHeader.Text       = "EQUIPOS"
+$rightHeader.Text       = "Equipos masterizando"
 $rightHeader.Dock       = "Top"
 $rightHeader.Height     = 26
 $rightHeader.Font       = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
@@ -1743,7 +1743,7 @@ function New-EquipoCard {
     # Linea de estado: "● ONLINE" (verde) o "● OFFLINE" (rojo), en negrita para mayor visibilidad
     $lStatus           = New-Object System.Windows.Forms.Label
     $lStatus.Name      = "lblStatus"
-    $lStatus.Text      = "  Pendiente..."
+    $lStatus.Text      = "  ... | $Name"
     $lStatus.ForeColor = [System.Drawing.Color]::Gray
     $lStatus.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
     $lStatus.Location  = New-Object System.Drawing.Point(6, 29)
@@ -1767,10 +1767,10 @@ function Update-EquipoCard {
     if (-not $lStatus) { return }
     $online = Test-Connection -ComputerName $CardPanel.Tag -Count 1 -Quiet -ErrorAction SilentlyContinue
     if ($online) {
-        $lStatus.Text      = "  ONLINE"
+        $lStatus.Text      = "  ONLINE  |  $($CardPanel.Tag)"
         $lStatus.ForeColor = [System.Drawing.Color]::LightGreen
     } else {
-        $lStatus.Text      = "  OFFLINE"
+        $lStatus.Text      = "  OFFLINE  |  $($CardPanel.Tag)"
         $lStatus.ForeColor = [System.Drawing.Color]::Tomato
     }
     [System.Windows.Forms.Application]::DoEvents()
@@ -2074,7 +2074,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.8.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.8.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
