@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.9.0
+    2.9.1
 #>
 
 [CmdletBinding()]
@@ -255,20 +255,28 @@ function Test-IsLocal {
 # Local  : & $ScriptBlock (sin WinRM, sin red)
 # Remoto : Invoke-Command con timeout via $script:RemoteSessionOpt
 # ArgumentList se pasa igual en ambos casos (splatting posicional).
+# OperationTimeoutMs: si >0 construye un PSSessionOption ad-hoc con ese timeout.
+# Usar solo para operaciones largas (ej: inscripcion de certificados via certreq).
 function Invoke-LocalOrRemote {
     param(
         [Parameter(Mandatory)][string]$ComputerName,
         [Parameter(Mandatory)][scriptblock]$ScriptBlock,
-        [object[]]$ArgumentList = @()
+        [object[]]$ArgumentList       = @(),
+        [int]$OperationTimeoutMs      = 0
     )
     if (Test-IsLocal $ComputerName) {
         if ($ArgumentList.Count -gt 0) { return & $ScriptBlock @ArgumentList }
         else                           { return & $ScriptBlock }
     }
+    $sessOpt = if ($OperationTimeoutMs -gt 0) {
+        New-PSSessionOption -OpenTimeout 10000 -OperationTimeout $OperationTimeoutMs
+    } else {
+        $script:RemoteSessionOpt
+    }
     $opts = @{
         ComputerName  = $ComputerName
         ScriptBlock   = $ScriptBlock
-        SessionOption = $script:RemoteSessionOpt
+        SessionOption = $sessOpt
         ErrorAction   = 'Stop'
     }
     if ($ArgumentList.Count -gt 0) { $opts['ArgumentList'] = $ArgumentList }
@@ -540,8 +548,13 @@ function Invoke-MasterCheck {
                         $urls    = @($certDef.CesUrls)
                         $ct      = $certType
                         Invoke-Step -Name "Inscribir $ct via certreq+CES" -ScriptBlock {
+                            # OperationTimeoutMs=180000 (3 min): PASO 2 puede tardar hasta
+                            # cesTimeout(20s) * nUrls(2) = 40s en el peor caso.
+                            # El timeout global de 30s causaba WSManFault antes de completar.
                             $remoteResult = Invoke-LocalOrRemote -ComputerName $script:Target `
-                                -ArgumentList $urls, $ct, $script:CertreqEnrollBlock -ScriptBlock {
+                                -ArgumentList $urls, $ct, $script:CertreqEnrollBlock `
+                                -OperationTimeoutMs 180000 `
+                                -ScriptBlock {
                                     param($cesUrls, $certType, $enrollBlock)
                                     & $enrollBlock $cesUrls $certType
                                 }
