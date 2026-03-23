@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.9.1
+    2.9.2
 #>
 
 [CmdletBinding()]
@@ -548,16 +548,14 @@ function Invoke-MasterCheck {
                         $urls    = @($certDef.CesUrls)
                         $ct      = $certType
                         Invoke-Step -Name "Inscribir $ct via certreq+CES" -ScriptBlock {
+                            # $script:CertreqEnrollBlock se pasa como -ScriptBlock (no como ArgumentList)
+                            # para evitar que PSRP serialice el ScriptBlock a string al cruzar WinRM.
                             # OperationTimeoutMs=180000 (3 min): PASO 2 puede tardar hasta
                             # cesTimeout(20s) * nUrls(2) = 40s en el peor caso.
-                            # El timeout global de 30s causaba WSManFault antes de completar.
                             $remoteResult = Invoke-LocalOrRemote -ComputerName $script:Target `
-                                -ArgumentList $urls, $ct, $script:CertreqEnrollBlock `
+                                -ArgumentList $urls, $ct `
                                 -OperationTimeoutMs 180000 `
-                                -ScriptBlock {
-                                    param($cesUrls, $certType, $enrollBlock)
-                                    & $enrollBlock $cesUrls $certType
-                                }
+                                -ScriptBlock $script:CertreqEnrollBlock
                             Write-StepList -Steps @($remoteResult.Steps)
                             return $remoteResult
                         }
