@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.2 (GUI)
+    Herramienta de administracion remota unificada v2.10.3 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.2
+    2.10.3
 #>
 
 [CmdletBinding()]
@@ -1568,10 +1568,12 @@ function Show-NacRemediationForm {
     $AppendColor = {
         param([string]$Text, [System.Drawing.Color]$Color)
         if (-not $script:nacRtb) { return }
+        $script:nacRtb.ReadOnly        = $false
         $script:nacRtb.SelectionStart  = $script:nacRtb.TextLength
         $script:nacRtb.SelectionLength = 0
         $script:nacRtb.SelectionColor  = $Color
         $script:nacRtb.AppendText("$Text`r`n")
+        $script:nacRtb.ReadOnly        = $true
         $script:nacRtb.SelectionStart  = $script:nacRtb.TextLength
         $script:nacRtb.ScrollToCaret()
         [System.Windows.Forms.Application]::DoEvents()
