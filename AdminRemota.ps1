@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.1 (GUI)
+    Herramienta de administracion remota unificada v2.10.2 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.1
+    2.10.2
 #>
 
 [CmdletBinding()]
@@ -1622,7 +1622,6 @@ function Show-NacRemediationForm {
     $nacCboServer.DropDownStyle = "DropDownList"
     $nacCboServer.BackColor    = [System.Drawing.Color]::FromArgb(55, 55, 60)
     $nacCboServer.ForeColor    = $cWhite
-    $nacCboServer.FlatStyle    = "Flat"
     [void]$nacCboServer.Items.Add("Getafe")
     [void]$nacCboServer.Items.Add("Sevilla")
     $nacCboServer.SelectedIndex = 0
