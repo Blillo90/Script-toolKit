@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.8.3 (GUI)
+    Herramienta de administracion remota unificada v2.10.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.9.2
+    2.10.0
 #>
 
 [CmdletBinding()]
@@ -1532,6 +1532,383 @@ function New-FlatButton {
     return $b
 }
 
+#region ═══════════════════════════════════════════════════════════
+# VENTANA SECUNDARIA: NAC REMEDIATION
+#═══════════════════════════════════════════════════════════════════
+
+function Show-NacRemediationForm {
+
+    # ── Rutas LDAP por servidor ───────────────────────────────────
+    $nacPaths = @{
+        "Getafe"  = "LDAP://nacget.intra.casa.corp:636/CN=NAC,DC=ds,DC=corp"
+        "Sevilla" = "LDAP://nactab.intra.casa.corp:636/CN=NAC,DC=ds,DC=corp"
+    }
+    $nacRemPaths = @{
+        "Getafe"  = "LDAP://nacget.intra.casa.corp:636/CN=Remediation,CN=NAC,DC=ds,DC=corp"
+        "Sevilla" = "LDAP://nactab.intra.casa.corp:636/CN=Remediation,CN=NAC,DC=ds,DC=corp"
+    }
+
+    # ── Colores reutilizados ──────────────────────────────────────
+    $cBgDark   = [System.Drawing.Color]::FromArgb(28,  28,  28)
+    $cBgPanel  = [System.Drawing.Color]::FromArgb(45,  45,  48)
+    $cBgOut    = [System.Drawing.Color]::FromArgb(16,  16,  16)
+    $cWhite    = [System.Drawing.Color]::White
+    $cSilver   = [System.Drawing.Color]::Silver
+    $cAccent   = [System.Drawing.Color]::FromArgb(0,   122, 204)
+    $cBtnGray  = [System.Drawing.Color]::FromArgb(62,   62,  66)
+    $cBtnGreen = [System.Drawing.Color]::FromArgb(0,   130,  60)
+    $cBtnPurp  = [System.Drawing.Color]::FromArgb(80,    0, 120)
+
+    $fSmall = New-Object System.Drawing.Font("Segoe UI",  9)
+    $fMono  = New-Object System.Drawing.Font("Consolas",  9)
+    $fTitle = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+
+    # ── Helpers internos ─────────────────────────────────────────
+    # AppendColor: anadir texto coloreado al RichTextBox de salida NAC
+    $rtbRef = $null   # se asigna mas adelante; closure captura la variable
+    $AppendColor = {
+        param([string]$Text, [System.Drawing.Color]$Color)
+        if (-not $script:nacRtb) { return }
+        $script:nacRtb.SelectionStart  = $script:nacRtb.TextLength
+        $script:nacRtb.SelectionLength = 0
+        $script:nacRtb.SelectionColor  = $Color
+        $script:nacRtb.AppendText("$Text`r`n")
+        $script:nacRtb.SelectionStart  = $script:nacRtb.TextLength
+        $script:nacRtb.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
+    $ClearOutput = {
+        if ($script:nacRtb) { $script:nacRtb.Clear() }
+    }
+
+    # ── Formulario NAC ───────────────────────────────────────────
+    $nacForm                 = New-Object System.Windows.Forms.Form
+    $nacForm.Text            = "NAC Remediation"
+    $nacForm.Size            = New-Object System.Drawing.Size(820, 520)
+    $nacForm.MinimumSize     = New-Object System.Drawing.Size(720, 460)
+    $nacForm.BackColor       = $cBgDark
+    $nacForm.ForeColor       = $cWhite
+    $nacForm.Font            = $fSmall
+    $nacForm.StartPosition   = "CenterParent"
+    $nacForm.FormBorderStyle = "Sizable"
+
+    # ── Panel superior de controles ───────────────────────────────
+    $nacTop             = New-Object System.Windows.Forms.Panel
+    $nacTop.Dock        = "Top"
+    $nacTop.Height      = 160
+    $nacTop.BackColor   = $cBgPanel
+    $nacForm.Controls.Add($nacTop)
+
+    # Titulo
+    $nacLblTitle           = New-Object System.Windows.Forms.Label
+    $nacLblTitle.Text      = "  NAC REMEDIATION"
+    $nacLblTitle.Font      = $fTitle
+    $nacLblTitle.ForeColor = [System.Drawing.Color]::FromArgb(180, 100, 255)
+    $nacLblTitle.AutoSize  = $true
+    $nacLblTitle.Location  = New-Object System.Drawing.Point(8, 8)
+    $nacTop.Controls.Add($nacLblTitle)
+
+    # Servidor label + ComboBox
+    $nacLblSrv          = New-Object System.Windows.Forms.Label
+    $nacLblSrv.Text     = "Servidor:"
+    $nacLblSrv.Location = New-Object System.Drawing.Point(10, 40)
+    $nacLblSrv.Size     = New-Object System.Drawing.Size(65, 22)
+    $nacLblSrv.TextAlign = "MiddleLeft"
+    $nacTop.Controls.Add($nacLblSrv)
+
+    $nacCboServer          = New-Object System.Windows.Forms.ComboBox
+    $nacCboServer.Location = New-Object System.Drawing.Point(80, 40)
+    $nacCboServer.Size     = New-Object System.Drawing.Size(110, 22)
+    $nacCboServer.DropDownStyle = "DropDownList"
+    $nacCboServer.BackColor    = [System.Drawing.Color]::FromArgb(55, 55, 60)
+    $nacCboServer.ForeColor    = $cWhite
+    $nacCboServer.FlatStyle    = "Flat"
+    [void]$nacCboServer.Items.Add("Getafe")
+    [void]$nacCboServer.Items.Add("Sevilla")
+    $nacCboServer.SelectedIndex = 0
+    $nacTop.Controls.Add($nacCboServer)
+
+    # Fila MAC
+    $nacLblMac          = New-Object System.Windows.Forms.Label
+    $nacLblMac.Text     = "MAC:"
+    $nacLblMac.Location = New-Object System.Drawing.Point(10, 75)
+    $nacLblMac.Size     = New-Object System.Drawing.Size(65, 22)
+    $nacLblMac.TextAlign = "MiddleLeft"
+    $nacTop.Controls.Add($nacLblMac)
+
+    $nacTxtMac          = New-Object System.Windows.Forms.TextBox
+    $nacTxtMac.Location = New-Object System.Drawing.Point(80, 75)
+    $nacTxtMac.Size     = New-Object System.Drawing.Size(200, 22)
+    $nacTxtMac.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 60)
+    $nacTxtMac.ForeColor = $cWhite
+    $nacTxtMac.BorderStyle = "FixedSingle"
+    $nacTxtMac.PlaceholderText = "aa:bb:cc:dd:ee:ff"
+    $nacTop.Controls.Add($nacTxtMac)
+
+    $nacBtnCheckMac          = New-Object System.Windows.Forms.Button
+    $nacBtnCheckMac.Text     = "Check MAC"
+    $nacBtnCheckMac.Location = New-Object System.Drawing.Point(290, 73)
+    $nacBtnCheckMac.Size     = New-Object System.Drawing.Size(110, 26)
+    $nacBtnCheckMac.BackColor = $cBtnGray
+    $nacBtnCheckMac.ForeColor = $cWhite
+    $nacBtnCheckMac.FlatStyle = "Flat"
+    $nacBtnCheckMac.FlatAppearance.BorderSize  = 1
+    $nacBtnCheckMac.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+    $nacBtnCheckMac.Cursor   = "Hand"
+    $nacTop.Controls.Add($nacBtnCheckMac)
+
+    # Fila CN
+    $nacLblCn           = New-Object System.Windows.Forms.Label
+    $nacLblCn.Text      = "CN:"
+    $nacLblCn.Location  = New-Object System.Drawing.Point(10, 110)
+    $nacLblCn.Size      = New-Object System.Drawing.Size(65, 22)
+    $nacLblCn.TextAlign = "MiddleLeft"
+    $nacTop.Controls.Add($nacLblCn)
+
+    $nacTxtCn           = New-Object System.Windows.Forms.TextBox
+    $nacTxtCn.Location  = New-Object System.Drawing.Point(80, 110)
+    $nacTxtCn.Size      = New-Object System.Drawing.Size(200, 22)
+    $nacTxtCn.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 60)
+    $nacTxtCn.ForeColor = $cWhite
+    $nacTxtCn.BorderStyle = "FixedSingle"
+    $nacTop.Controls.Add($nacTxtCn)
+
+    $nacBtnCheckCn          = New-Object System.Windows.Forms.Button
+    $nacBtnCheckCn.Text     = "Check CN"
+    $nacBtnCheckCn.Location = New-Object System.Drawing.Point(290, 108)
+    $nacBtnCheckCn.Size     = New-Object System.Drawing.Size(110, 26)
+    $nacBtnCheckCn.BackColor = $cBtnGray
+    $nacBtnCheckCn.ForeColor = $cWhite
+    $nacBtnCheckCn.FlatStyle = "Flat"
+    $nacBtnCheckCn.FlatAppearance.BorderSize  = 1
+    $nacBtnCheckCn.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+    $nacBtnCheckCn.Cursor   = "Hand"
+    $nacTop.Controls.Add($nacBtnCheckCn)
+
+    # Boton Add Device (fila MAC, a la derecha)
+    $nacBtnAdd          = New-Object System.Windows.Forms.Button
+    $nacBtnAdd.Text     = "Add Device"
+    $nacBtnAdd.Location = New-Object System.Drawing.Point(415, 73)
+    $nacBtnAdd.Size     = New-Object System.Drawing.Size(110, 26)
+    $nacBtnAdd.BackColor = $cBtnPurp
+    $nacBtnAdd.ForeColor = $cWhite
+    $nacBtnAdd.FlatStyle = "Flat"
+    $nacBtnAdd.FlatAppearance.BorderSize  = 1
+    $nacBtnAdd.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(100, 60, 140)
+    $nacBtnAdd.Cursor   = "Hand"
+    $nacTop.Controls.Add($nacBtnAdd)
+
+    # Boton Limpiar salida
+    $nacBtnClear          = New-Object System.Windows.Forms.Button
+    $nacBtnClear.Text     = "Limpiar"
+    $nacBtnClear.Location = New-Object System.Drawing.Point(415, 108)
+    $nacBtnClear.Size     = New-Object System.Drawing.Size(110, 26)
+    $nacBtnClear.BackColor = [System.Drawing.Color]::FromArgb(62, 62, 66)
+    $nacBtnClear.ForeColor = $cWhite
+    $nacBtnClear.FlatStyle = "Flat"
+    $nacBtnClear.FlatAppearance.BorderSize  = 1
+    $nacBtnClear.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+    $nacBtnClear.Cursor   = "Hand"
+    $nacTop.Controls.Add($nacBtnClear)
+
+    # ── Area de salida ────────────────────────────────────────────
+    $script:nacRtb             = New-Object System.Windows.Forms.RichTextBox
+    $script:nacRtb.Dock        = "Fill"
+    $script:nacRtb.BackColor   = $cBgOut
+    $script:nacRtb.ForeColor   = $cWhite
+    $script:nacRtb.Font        = $fMono
+    $script:nacRtb.ReadOnly    = $true
+    $script:nacRtb.BorderStyle = "None"
+    $script:nacRtb.ScrollBars  = "Vertical"
+    $script:nacRtb.WordWrap    = $false
+    $nacForm.Controls.Add($script:nacRtb)
+
+    # ── Helper: mostrar propiedades de un resultado ADLDS ─────────
+    $ShowResult = {
+        param($entry, [string]$ldapPath)
+        $props = @("cn","deviceType","deviceZone","networkAddress","deviceRemediationID",
+                   "adminDisplayName","whenCreated","description","devicemodel","device8021xcapable")
+        & $AppendColor "  Ruta LDAP : $ldapPath" $cSilver
+        foreach ($p in $props) {
+            $val = $entry.Properties[$p]
+            if ($val -and $val.Count -gt 0) {
+                & $AppendColor ("  {0,-28}: {1}" -f $p, ($val | Select-Object -First 1)) $cWhite
+            }
+        }
+        # Indicar en que contenedor esta el objeto
+        $dn = ""
+        if ($entry.Properties["distinguishedName"] -and $entry.Properties["distinguishedName"].Count -gt 0) {
+            $dn = $entry.Properties["distinguishedName"][0]
+        } elseif ($entry.Path) {
+            $dn = $entry.Path
+        }
+        if ($dn -match "Remediation") {
+            & $AppendColor "  >>> ESTADO: EN REMEDIATION <<<" ([System.Drawing.Color]::Yellow)
+        } elseif ($dn -match "Migration") {
+            & $AppendColor "  >>> ESTADO: EN MIGRATION <<<" ([System.Drawing.Color]::Orange)
+        } elseif ($dn -match "Exception") {
+            & $AppendColor "  >>> ESTADO: EN EXCEPTION <<<" ([System.Drawing.Color]::Cyan)
+        } else {
+            & $AppendColor "  >>> ESTADO: registrado (NAC normal) <<<" ([System.Drawing.Color]::LightGreen)
+        }
+    }
+
+    # ── Logica Check MAC ─────────────────────────────────────────
+    $nacBtnCheckMac.Add_Click({
+        & $ClearOutput
+        $mac = $nacTxtMac.Text.Trim().ToLower()
+        $srv = $nacCboServer.SelectedItem
+        if ([string]::IsNullOrEmpty($mac)) {
+            & $AppendColor "[!] Introduce una direccion MAC." ([System.Drawing.Color]::Tomato)
+            return
+        }
+        & $AppendColor "[*] Buscando MAC '$mac' en servidor '$srv'..." ([System.Drawing.Color]::Cyan)
+        try {
+            $ldapPath = $nacPaths[$srv]
+            $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
+            $ds = New-Object System.DirectoryServices.DirectorySearcher($de)
+            $ds.Filter = "(|(networkAddress=$mac)(deviceRemediationID=$mac))"
+            $ds.PropertiesToLoad.AddRange(@("cn","deviceType","deviceZone","networkAddress",
+                "deviceRemediationID","adminDisplayName","whenCreated","description",
+                "devicemodel","device8021xcapable","distinguishedName"))
+            $ds.SearchScope = [System.DirectoryServices.SearchScope]::Subtree
+            $results = $ds.FindAll()
+            if ($results.Count -eq 0) {
+                & $AppendColor "[!] MAC no encontrada en NAC ($srv)." ([System.Drawing.Color]::Yellow)
+            } else {
+                & $AppendColor "[+] Encontrados $($results.Count) resultado(s):" ([System.Drawing.Color]::LightGreen)
+                foreach ($r in $results) {
+                    & $AppendColor "" $cWhite
+                    & $ShowResult $r $ldapPath
+                }
+            }
+            $results.Dispose()
+        } catch {
+            & $AppendColor "[ERROR] $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+        }
+    })
+
+    # ── Logica Check CN ──────────────────────────────────────────
+    $nacBtnCheckCn.Add_Click({
+        & $ClearOutput
+        $cn = $nacTxtCn.Text.Trim()
+        $srv = $nacCboServer.SelectedItem
+        if ([string]::IsNullOrEmpty($cn)) {
+            & $AppendColor "[!] Introduce un CN." ([System.Drawing.Color]::Tomato)
+            return
+        }
+        & $AppendColor "[*] Buscando CN '$cn' en servidor '$srv'..." ([System.Drawing.Color]::Cyan)
+        try {
+            $ldapPath = $nacPaths[$srv]
+            $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
+            $ds = New-Object System.DirectoryServices.DirectorySearcher($de)
+            $ds.Filter = "(cn=$cn)"
+            $ds.PropertiesToLoad.AddRange(@("cn","deviceType","deviceZone","networkAddress",
+                "deviceRemediationID","adminDisplayName","whenCreated","description",
+                "devicemodel","device8021xcapable","distinguishedName"))
+            $ds.SearchScope = [System.DirectoryServices.SearchScope]::Subtree
+            $results = $ds.FindAll()
+            if ($results.Count -eq 0) {
+                & $AppendColor "[!] CN '$cn' no encontrado en NAC ($srv)." ([System.Drawing.Color]::Yellow)
+            } else {
+                & $AppendColor "[+] Encontrados $($results.Count) resultado(s):" ([System.Drawing.Color]::LightGreen)
+                foreach ($r in $results) {
+                    & $AppendColor "" $cWhite
+                    & $ShowResult $r $ldapPath
+                }
+            }
+            $results.Dispose()
+        } catch {
+            & $AppendColor "[ERROR] $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+        }
+    })
+
+    # ── Logica Add Device ────────────────────────────────────────
+    $nacBtnAdd.Add_Click({
+        & $ClearOutput
+        $mac = $nacTxtMac.Text.Trim().ToLower()
+        $cn  = $nacTxtCn.Text.Trim()
+        $srv = $nacCboServer.SelectedItem
+
+        # Si la MAC esta vacia, intentar resolverla desde ADLDS por CN
+        if ([string]::IsNullOrEmpty($mac)) {
+            if ([string]::IsNullOrEmpty($cn)) {
+                & $AppendColor "[!] Introduce al menos MAC o CN." ([System.Drawing.Color]::Tomato)
+                return
+            }
+            & $AppendColor "[*] MAC vacia — buscando networkAddress por CN '$cn'..." ([System.Drawing.Color]::Cyan)
+            try {
+                $ldapPath = $nacPaths[$srv]
+                $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
+                $ds = New-Object System.DirectoryServices.DirectorySearcher($de)
+                $ds.Filter = "(cn=$cn)"
+                $ds.PropertiesToLoad.Add("networkAddress") | Out-Null
+                $ds.SearchScope = [System.DirectoryServices.SearchScope]::Subtree
+                $found = $ds.FindOne()
+                if ($found -and $found.Properties["networkAddress"].Count -gt 0) {
+                    $mac = $found.Properties["networkAddress"][0].ToString().ToLower()
+                    $nacTxtMac.Text = $mac
+                    & $AppendColor "[+] MAC encontrada en ADLDS: $mac" ([System.Drawing.Color]::LightGreen)
+                } else {
+                    & $AppendColor "[!] No se encontro networkAddress para CN '$cn'." ([System.Drawing.Color]::Yellow)
+                    return
+                }
+            } catch {
+                & $AppendColor "[ERROR] $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+                return
+            }
+        }
+
+        # Validar formato MAC (xx:xx:xx:xx:xx:xx)
+        if ($mac -notmatch '^([0-9a-f]{2}:){5}([0-9a-f]{2})$') {
+            & $AppendColor "[!] Formato MAC invalido. Usa aa:bb:cc:dd:ee:ff" ([System.Drawing.Color]::Tomato)
+            return
+        }
+
+        # Requerir CN para crear el objeto
+        if ([string]::IsNullOrEmpty($cn)) {
+            & $AppendColor "[!] CN requerido para crear el dispositivo." ([System.Drawing.Color]::Tomato)
+            return
+        }
+
+        & $AppendColor "[*] Creando dispositivo CN=$cn MAC=$mac en Remediation ($srv)..." ([System.Drawing.Color]::Cyan)
+        try {
+            $remPath = $nacRemPaths[$srv]
+            $objOU   = [ADSI]$remPath
+            $newDev  = $objOU.Create("device", "CN=$cn")
+            $newDev.Put("deviceZone",          "ES")
+            $newDev.Put("deviceType",          "Remediation-PC")
+            $newDev.Put("deviceRemediationID", $mac)
+            $newDev.Put("networkAddress",      $mac)
+            $newDev.Put("adminDisplayName",    "$env:USERDOMAIN\$env:USERNAME")
+            $newDev.SetInfo()
+            & $AppendColor "[+] Dispositivo creado correctamente en Remediation ($srv)." ([System.Drawing.Color]::LightGreen)
+            & $AppendColor "    CN  : $cn" $cWhite
+            & $AppendColor "    MAC : $mac" $cWhite
+            & $AppendColor "    User: $env:USERDOMAIN\$env:USERNAME" $cSilver
+        } catch {
+            & $AppendColor "[ERROR] No se pudo crear el dispositivo: $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+        }
+    })
+
+    # ── Boton Limpiar ────────────────────────────────────────────
+    $nacBtnClear.Add_Click({ & $ClearOutput })
+
+    # ── Mensaje de bienvenida ────────────────────────────────────
+    & $AppendColor "NAC Remediation — herramienta de gestion de dispositivos ADLDS" $cSilver
+    & $AppendColor "Selecciona servidor, introduce MAC o CN y usa los botones." $cSilver
+    & $AppendColor "" $cWhite
+
+    # ── Mostrar ventana modal ─────────────────────────────────────
+    [void]$nacForm.ShowDialog($form)
+
+    # Limpiar referencia RTB al cerrar
+    $script:nacRtb = $null
+}
+
+#endregion
+
 # ── Panel superior ────────────────────────────────────────────────
 $topPanel           = New-Object System.Windows.Forms.Panel
 $topPanel.Dock      = "Top"
@@ -1654,6 +2031,9 @@ $topPanel.Controls.Add($cboMaintenance)
 
 $btnExecute = New-FlatButton "  Ejecutar" 545 153 110 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
 
+$btnNAC = New-FlatButton "  NAC Remediation" 660 153 150 28 ([System.Drawing.Color]::FromArgb(80, 0, 120))
+$btnNAC.Add_Click({ Show-NacRemediationForm })
+
 # ── Fila 3: barra de progreso (DISM + SFC) ────────────────────────
 $script:progressBar          = New-Object System.Windows.Forms.ProgressBar
 $script:progressBar.Location = New-Object System.Drawing.Point(10, 186)
@@ -1675,7 +2055,7 @@ $topPanel.Controls.Add($script:progressLabel)
 
 $btnCancel.Enabled = $false
 
-foreach ($b in @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnClear,$btnCancel,$btnRestart,$btnExecute)) {
+foreach ($b in @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnClear,$btnCancel,$btnRestart,$btnExecute,$btnNAC)) {
     $topPanel.Controls.Add($b)
 }
 
