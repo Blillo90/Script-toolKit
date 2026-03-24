@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.5 (GUI)
+    Herramienta de administracion remota unificada v2.10.6 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.5
+    2.10.6
 #>
 
 [CmdletBinding()]
@@ -1567,9 +1567,13 @@ function Show-NacRemediationForm {
     # AppendColor: anadir texto coloreado al RichTextBox de salida NAC
     # Helpers de escritura: usan $global:nacRtb para ser accesibles desde
     # cualquier scope, incluidos modulos dinamicos de GetNewClosure (PS5.1).
+    # ReadOnly se desactiva temporalmente porque en WinForms, SelectionColor
+    # no se aplica sobre texto ya insertado cuando ReadOnly=true, dejando el
+    # texto en el color de insercion por defecto (negro sobre fondo oscuro).
     $AppendColor = {
         param([string]$Text, [System.Drawing.Color]$Color)
         if (-not $global:nacRtb) { return }
+        $global:nacRtb.ReadOnly = $false
         $ss = $global:nacRtb.TextLength
         $global:nacRtb.AppendText($Text)
         $sl = $global:nacRtb.SelectionStart - $ss + 1
@@ -1578,10 +1582,15 @@ function Show-NacRemediationForm {
         $global:nacRtb.AppendText("`r`n")
         $global:nacRtb.SelectionStart = $global:nacRtb.TextLength
         $global:nacRtb.ScrollToCaret()
+        $global:nacRtb.ReadOnly = $true
         [System.Windows.Forms.Application]::DoEvents()
     }
     $ClearOutput = {
-        if ($global:nacRtb) { $global:nacRtb.Clear() }
+        if ($global:nacRtb) {
+            $global:nacRtb.ReadOnly = $false
+            $global:nacRtb.Clear()
+            $global:nacRtb.ReadOnly = $true
+        }
     }
 
     # ── Formulario NAC ───────────────────────────────────────────
@@ -1713,6 +1722,15 @@ function Show-NacRemediationForm {
     $nacTop.Controls.Add($nacBtnClear)
 
     # ── Area de salida ────────────────────────────────────────────
+    # Se usa un panel intermedio (Dock=Fill) para garantizar que el RTB quede
+    # debajo del panel superior, independientemente del orden de procesamiento
+    # de Dock en PS5.1 WinForms. Sin el panel, Dock=Fill puede solaparse con
+    # Dock=Top y ocultar el texto escrito en la zona superior del RTB.
+    $nacOutPanel            = New-Object System.Windows.Forms.Panel
+    $nacOutPanel.Dock       = "Fill"
+    $nacOutPanel.BackColor  = $cBgOut
+    $nacForm.Controls.Add($nacOutPanel)
+
     $global:nacRtb             = New-Object System.Windows.Forms.RichTextBox
     $global:nacRtb.Dock        = "Fill"
     $global:nacRtb.BackColor   = $cBgOut
@@ -1722,7 +1740,7 @@ function Show-NacRemediationForm {
     $global:nacRtb.BorderStyle = "None"
     $global:nacRtb.ScrollBars  = "Vertical"
     $global:nacRtb.WordWrap    = $false
-    $nacForm.Controls.Add($global:nacRtb)
+    $nacOutPanel.Controls.Add($global:nacRtb)
 
     # ── Closures de escritura con referencia local al RTB ──────────
     # ── Helper: mostrar propiedades de un resultado ADLDS ─────────
@@ -1758,6 +1776,7 @@ function Show-NacRemediationForm {
     # ── Logica Check MAC ─────────────────────────────────────────
     $nacBtnCheckMac.Add_Click(({
         & $ClearOutput
+        & $AppendColor "Check MAC clicked" ([System.Drawing.Color]::White)
         $mac = $nacTxtMac.Text.Trim().ToLower()
         $srv = $nacCboServer.SelectedItem
         if ([string]::IsNullOrEmpty($mac)) {
@@ -1793,6 +1812,7 @@ function Show-NacRemediationForm {
     # ── Logica Check CN ──────────────────────────────────────────
     $nacBtnCheckCn.Add_Click(({
         & $ClearOutput
+        & $AppendColor "Check CN clicked" ([System.Drawing.Color]::White)
         $cn = $nacTxtCn.Text.Trim()
         $srv = $nacCboServer.SelectedItem
         if ([string]::IsNullOrEmpty($cn)) {
@@ -1897,6 +1917,7 @@ function Show-NacRemediationForm {
     $nacBtnClear.Add_Click(({ & $ClearOutput }).GetNewClosure())
 
     # ── Mensaje de bienvenida ────────────────────────────────────
+    & $AppendColor ">>> NAC output ready <<<" ([System.Drawing.Color]::Cyan)
     & $AppendColor "NAC Remediation - herramienta de gestion de dispositivos ADLDS" $cSilver
     & $AppendColor "Selecciona servidor, introduce MAC o CN y usa los botones." $cSilver
     & $AppendColor "" $cWhite
