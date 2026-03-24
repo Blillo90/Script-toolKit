@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.3 (GUI)
+    Herramienta de administracion remota unificada v2.10.4 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.3
+    2.10.4
 #>
 
 [CmdletBinding()]
@@ -1565,23 +1565,11 @@ function Show-NacRemediationForm {
 
     # ── Helpers internos ─────────────────────────────────────────
     # AppendColor: anadir texto coloreado al RichTextBox de salida NAC
-    $AppendColor = {
-        param([string]$Text, [System.Drawing.Color]$Color)
-        if (-not $script:nacRtb) { return }
-        $script:nacRtb.ReadOnly        = $false
-        $script:nacRtb.SelectionStart  = $script:nacRtb.TextLength
-        $script:nacRtb.SelectionLength = 0
-        $script:nacRtb.SelectionColor  = $Color
-        $script:nacRtb.AppendText("$Text`r`n")
-        $script:nacRtb.ReadOnly        = $true
-        $script:nacRtb.SelectionStart  = $script:nacRtb.TextLength
-        $script:nacRtb.ScrollToCaret()
-        [System.Windows.Forms.Application]::DoEvents()
-    }
-
-    $ClearOutput = {
-        if ($script:nacRtb) { $script:nacRtb.Clear() }
-    }
+    # Nota: $AppendColor y $ClearOutput se redefinen como closures con
+    # referencia local al RTB justo despues de crear $script:nacRtb.
+    # Estas definiciones placeholder no se usan directamente.
+    $AppendColor = { param([string]$Text, [System.Drawing.Color]$Color) }
+    $ClearOutput = { }
 
     # ── Formulario NAC ───────────────────────────────────────────
     $nacForm                 = New-Object System.Windows.Forms.Form
@@ -1722,6 +1710,29 @@ function Show-NacRemediationForm {
     $script:nacRtb.ScrollBars  = "Vertical"
     $script:nacRtb.WordWrap    = $false
     $nacForm.Controls.Add($script:nacRtb)
+
+    # ── Closures de escritura con referencia local al RTB ──────────
+    # En PS5.1, GetNewClosure crea un modulo dinamico donde $script:
+    # no apunta al .ps1 original sino al modulo - nacRtb seria null.
+    # Solucion: capturar referencia local ($localRtb) y crear closures
+    # propias, igual que el script NAC original pasa $tb por parametro.
+    $localRtb    = $script:nacRtb
+    $AppendColor = ({
+        param([string]$Text, [System.Drawing.Color]$Color)
+        if (-not $localRtb) { return }
+        $ss = $localRtb.TextLength
+        $localRtb.AppendText($Text)
+        $sl = $localRtb.SelectionStart - $ss + 1
+        $localRtb.Select($ss, $sl)
+        $localRtb.SelectionColor = $Color
+        $localRtb.AppendText("`r`n")
+        $localRtb.SelectionStart = $localRtb.TextLength
+        $localRtb.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }).GetNewClosure()
+    $ClearOutput = ({
+        if ($localRtb) { $localRtb.Clear() }
+    }).GetNewClosure()
 
     # ── Helper: mostrar propiedades de un resultado ADLDS ─────────
     $ShowResult = ({
