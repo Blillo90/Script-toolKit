@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.4 (GUI)
+    Herramienta de administracion remota unificada v2.10.5 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.4
+    2.10.5
 #>
 
 [CmdletBinding()]
@@ -1565,11 +1565,24 @@ function Show-NacRemediationForm {
 
     # ── Helpers internos ─────────────────────────────────────────
     # AppendColor: anadir texto coloreado al RichTextBox de salida NAC
-    # Nota: $AppendColor y $ClearOutput se redefinen como closures con
-    # referencia local al RTB justo despues de crear $script:nacRtb.
-    # Estas definiciones placeholder no se usan directamente.
-    $AppendColor = { param([string]$Text, [System.Drawing.Color]$Color) }
-    $ClearOutput = { }
+    # Helpers de escritura: usan $global:nacRtb para ser accesibles desde
+    # cualquier scope, incluidos modulos dinamicos de GetNewClosure (PS5.1).
+    $AppendColor = {
+        param([string]$Text, [System.Drawing.Color]$Color)
+        if (-not $global:nacRtb) { return }
+        $ss = $global:nacRtb.TextLength
+        $global:nacRtb.AppendText($Text)
+        $sl = $global:nacRtb.SelectionStart - $ss + 1
+        $global:nacRtb.Select($ss, $sl)
+        $global:nacRtb.SelectionColor = $Color
+        $global:nacRtb.AppendText("`r`n")
+        $global:nacRtb.SelectionStart = $global:nacRtb.TextLength
+        $global:nacRtb.ScrollToCaret()
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    $ClearOutput = {
+        if ($global:nacRtb) { $global:nacRtb.Clear() }
+    }
 
     # ── Formulario NAC ───────────────────────────────────────────
     $nacForm                 = New-Object System.Windows.Forms.Form
@@ -1700,40 +1713,18 @@ function Show-NacRemediationForm {
     $nacTop.Controls.Add($nacBtnClear)
 
     # ── Area de salida ────────────────────────────────────────────
-    $script:nacRtb             = New-Object System.Windows.Forms.RichTextBox
-    $script:nacRtb.Dock        = "Fill"
-    $script:nacRtb.BackColor   = $cBgOut
-    $script:nacRtb.ForeColor   = $cWhite
-    $script:nacRtb.Font        = $fMono
-    $script:nacRtb.ReadOnly    = $true
-    $script:nacRtb.BorderStyle = "None"
-    $script:nacRtb.ScrollBars  = "Vertical"
-    $script:nacRtb.WordWrap    = $false
-    $nacForm.Controls.Add($script:nacRtb)
+    $global:nacRtb             = New-Object System.Windows.Forms.RichTextBox
+    $global:nacRtb.Dock        = "Fill"
+    $global:nacRtb.BackColor   = $cBgOut
+    $global:nacRtb.ForeColor   = $cWhite
+    $global:nacRtb.Font        = $fMono
+    $global:nacRtb.ReadOnly    = $true
+    $global:nacRtb.BorderStyle = "None"
+    $global:nacRtb.ScrollBars  = "Vertical"
+    $global:nacRtb.WordWrap    = $false
+    $nacForm.Controls.Add($global:nacRtb)
 
     # ── Closures de escritura con referencia local al RTB ──────────
-    # En PS5.1, GetNewClosure crea un modulo dinamico donde $script:
-    # no apunta al .ps1 original sino al modulo - nacRtb seria null.
-    # Solucion: capturar referencia local ($localRtb) y crear closures
-    # propias, igual que el script NAC original pasa $tb por parametro.
-    $localRtb    = $script:nacRtb
-    $AppendColor = ({
-        param([string]$Text, [System.Drawing.Color]$Color)
-        if (-not $localRtb) { return }
-        $ss = $localRtb.TextLength
-        $localRtb.AppendText($Text)
-        $sl = $localRtb.SelectionStart - $ss + 1
-        $localRtb.Select($ss, $sl)
-        $localRtb.SelectionColor = $Color
-        $localRtb.AppendText("`r`n")
-        $localRtb.SelectionStart = $localRtb.TextLength
-        $localRtb.ScrollToCaret()
-        [System.Windows.Forms.Application]::DoEvents()
-    }).GetNewClosure()
-    $ClearOutput = ({
-        if ($localRtb) { $localRtb.Clear() }
-    }).GetNewClosure()
-
     # ── Helper: mostrar propiedades de un resultado ADLDS ─────────
     $ShowResult = ({
         param($entry, [string]$ldapPath)
@@ -1914,7 +1905,7 @@ function Show-NacRemediationForm {
     [void]$nacForm.ShowDialog($form)
 
     # Limpiar referencia RTB al cerrar
-    $script:nacRtb = $null
+    $global:nacRtb = $null
 }
 
 #endregion
