@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.6 (GUI)
+    Herramienta de administracion remota unificada v2.10.7 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.6
+    2.10.7
 #>
 
 [CmdletBinding()]
@@ -2132,7 +2132,8 @@ $script:lvEquipos.HeaderStyle  = [System.Windows.Forms.ColumnHeaderStyle]::None
 $script:lvEquipos.BackColor    = [System.Drawing.Color]::FromArgb(32, 32, 35)
 $script:lvEquipos.ForeColor    = [System.Drawing.Color]::White
 $script:lvEquipos.BorderStyle  = "None"
-$script:lvEquipos.Font         = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
+$script:lvEquipos.Font              = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
+$script:lvEquipos.ShowItemToolTips  = $true
 $null = $script:lvEquipos.Columns.Add("Estado", 68)
 $null = $script:lvEquipos.Columns.Add("Equipo", 132)
 $rightPanel.Controls.Add($script:lvEquipos)
@@ -2155,6 +2156,25 @@ $script:EquiposFile = Join-Path $_equiposDir "equipos_seguimiento.json"
 
 # ── Helpers del ListView de equipos ──────────────────────────────
 
+# Resuelve la IP actual del hostname consultando el servidor DNS directamente,
+# sin usar el cache local del OS ni el cache de .NET.
+# Devuelve la IP como string o $null si no se resuelve.
+function Resolve-FreshIP {
+    param([string]$Hostname)
+    try {
+        # Obtener primer servidor DNS de la interfaz activa
+        $srv = (Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.ServerAddresses.Count -gt 0 } |
+                Select-Object -First 1).ServerAddresses | Select-Object -First 1
+        $q = if ($srv) {
+            Resolve-DnsName -Name $Hostname -Type A -DnsOnly -Server $srv -ErrorAction SilentlyContinue
+        } else {
+            Resolve-DnsName -Name $Hostname -Type A -DnsOnly -ErrorAction SilentlyContinue
+        }
+        return ($q | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress
+    } catch { return $null }
+}
+
 function Add-EquipoToList {
     param([string]$Name)
     $item          = New-Object System.Windows.Forms.ListViewItem("...")
@@ -2167,13 +2187,22 @@ function Add-EquipoToList {
 
 function Update-EquipoCard {
     param($item)
-    $online = Test-Connection -ComputerName $item.Tag -Count 1 -Quiet -ErrorAction SilentlyContinue
+    $hostname = $item.Tag
+    # Resolver IP actual desde DNS directo (evita cache OS y cache .NET)
+    $freshIP    = Resolve-FreshIP $hostname
+    # Comprobar conectividad por IP actual; si no se resolvio, usar hostname
+    $pingTarget = if ($freshIP) { $freshIP } else { $hostname }
+    $online     = Test-Connection -ComputerName $pingTarget -Count 1 -Quiet -ErrorAction SilentlyContinue
     if ($online) {
+        $tipo                  = if ($freshIP -and ($freshIP.StartsWith("10.142.") -or $freshIP.StartsWith("10.99."))) { "VPN" } else { "CABLE" }
+        $ipStr                 = if ($freshIP) { $freshIP } else { "?" }
         $item.SubItems[0].Text = "ONLINE"
         $item.ForeColor        = [System.Drawing.Color]::LightGreen
+        $item.ToolTipText      = "$hostname  |  $tipo  |  $ipStr"
     } else {
         $item.SubItems[0].Text = "OFFLINE"
         $item.ForeColor        = [System.Drawing.Color]::Tomato
+        $item.ToolTipText      = "$hostname  |  sin respuesta"
     }
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -2242,7 +2271,10 @@ function Get-ValidComputer {
         return $computer
     }
     Set-Status "Comprobando conectividad con '$computer'..." ([System.Drawing.Color]::Yellow)
-    if (-not (Test-Connection -ComputerName $computer -Count 1 -Quiet)) {
+    # Resolver IP actual desde DNS (evita cache): la identidad es el hostname, la IP es temporal
+    $freshIP    = Resolve-FreshIP $computer
+    $pingTarget = if ($freshIP) { $freshIP } else { $computer }
+    if (-not (Test-Connection -ComputerName $pingTarget -Count 1 -Quiet)) {
         Write-Fail "El equipo '$computer' no responde a ping (ICMP bloqueado o apagado)."
         Set-Status "Equipo no accesible" ([System.Drawing.Color]::Tomato)
         return $null
@@ -2285,17 +2317,14 @@ $btnPing.Add_Click({
     Set-Status "Haciendo ping a '$computer'..." ([System.Drawing.Color]::Yellow)
     Write-Sep
 
-    if (Test-Connection -ComputerName $computer -Count 1 -Quiet) {
-        # Resolver IP y clasificar tipo de conexion
-        $ip = $null
-        try {
-            $ip = [System.Net.Dns]::GetHostAddresses($computer) |
-                  Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
-                  Select-Object -First 1 -ExpandProperty IPAddressToString
-        } catch { }
+    # Resolver IP actual desde DNS directo (evita cache OS y cache .NET)
+    # El hostname es la fuente de verdad; la IP es dato temporal resuelto en cada comprobacion
+    $freshIP    = Resolve-FreshIP $computer
+    $pingTarget = if ($freshIP) { $freshIP } else { $computer }
 
-        $tipo  = if ($ip -and ($ip.StartsWith("10.142.") -or $ip.StartsWith("10.99."))) { "VPN" } else { "CABLE" }
-        $ipStr = if ($ip) { $ip } else { "?" }
+    if (Test-Connection -ComputerName $pingTarget -Count 1 -Quiet) {
+        $tipo  = if ($freshIP -and ($freshIP.StartsWith("10.142.") -or $freshIP.StartsWith("10.99."))) { "VPN" } else { "CABLE" }
+        $ipStr = if ($freshIP) { $freshIP } else { "?" }
 
         $lblPingResult.Text      = "ONLINE  |  $tipo  |  $ipStr"
         $lblPingResult.ForeColor = [System.Drawing.Color]::LightGreen
