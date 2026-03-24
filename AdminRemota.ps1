@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.0 (GUI)
+    Herramienta de administracion remota unificada v2.10.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.0
+    2.10.1
 #>
 
 [CmdletBinding()]
@@ -1565,7 +1565,6 @@ function Show-NacRemediationForm {
 
     # ── Helpers internos ─────────────────────────────────────────
     # AppendColor: anadir texto coloreado al RichTextBox de salida NAC
-    $rtbRef = $null   # se asigna mas adelante; closure captura la variable
     $AppendColor = {
         param([string]$Text, [System.Drawing.Color]$Color)
         if (-not $script:nacRtb) { return }
@@ -1643,7 +1642,6 @@ function Show-NacRemediationForm {
     $nacTxtMac.BackColor = [System.Drawing.Color]::FromArgb(55, 55, 60)
     $nacTxtMac.ForeColor = $cWhite
     $nacTxtMac.BorderStyle = "FixedSingle"
-    $nacTxtMac.PlaceholderText = "aa:bb:cc:dd:ee:ff"
     $nacTop.Controls.Add($nacTxtMac)
 
     $nacBtnCheckMac          = New-Object System.Windows.Forms.Button
@@ -1725,7 +1723,7 @@ function Show-NacRemediationForm {
     $nacForm.Controls.Add($script:nacRtb)
 
     # ── Helper: mostrar propiedades de un resultado ADLDS ─────────
-    $ShowResult = {
+    $ShowResult = ({
         param($entry, [string]$ldapPath)
         $props = @("cn","deviceType","deviceZone","networkAddress","deviceRemediationID",
                    "adminDisplayName","whenCreated","description","devicemodel","device8021xcapable")
@@ -1752,18 +1750,18 @@ function Show-NacRemediationForm {
         } else {
             & $AppendColor "  >>> ESTADO: registrado (NAC normal) <<<" ([System.Drawing.Color]::LightGreen)
         }
-    }
+    }).GetNewClosure()
 
     # ── Logica Check MAC ─────────────────────────────────────────
-    $nacBtnCheckMac.Add_Click({
+    $nacBtnCheckMac.Add_Click(({
         & $ClearOutput
         $mac = $nacTxtMac.Text.Trim().ToLower()
         $srv = $nacCboServer.SelectedItem
         if ([string]::IsNullOrEmpty($mac)) {
-            & $AppendColor "[!] Introduce una direccion MAC." ([System.Drawing.Color]::Tomato)
+            & $AppendColor "WARN: Introduce una direccion MAC." ([System.Drawing.Color]::Tomato)
             return
         }
-        & $AppendColor "[*] Buscando MAC '$mac' en servidor '$srv'..." ([System.Drawing.Color]::Cyan)
+        & $AppendColor "INFO: Buscando MAC '$mac' en servidor '$srv'..." ([System.Drawing.Color]::Cyan)
         try {
             $ldapPath = $nacPaths[$srv]
             $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
@@ -1775,9 +1773,9 @@ function Show-NacRemediationForm {
             $ds.SearchScope = [System.DirectoryServices.SearchScope]::Subtree
             $results = $ds.FindAll()
             if ($results.Count -eq 0) {
-                & $AppendColor "[!] MAC no encontrada en NAC ($srv)." ([System.Drawing.Color]::Yellow)
+                & $AppendColor "WARN: MAC no encontrada en NAC ($srv)." ([System.Drawing.Color]::Yellow)
             } else {
-                & $AppendColor "[+] Encontrados $($results.Count) resultado(s):" ([System.Drawing.Color]::LightGreen)
+                & $AppendColor "OK: Encontrados $($results.Count) resultado(s):" ([System.Drawing.Color]::LightGreen)
                 foreach ($r in $results) {
                     & $AppendColor "" $cWhite
                     & $ShowResult $r $ldapPath
@@ -1785,20 +1783,20 @@ function Show-NacRemediationForm {
             }
             $results.Dispose()
         } catch {
-            & $AppendColor "[ERROR] $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+            & $AppendColor "ERROR: $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
         }
-    })
+    }).GetNewClosure())
 
     # ── Logica Check CN ──────────────────────────────────────────
-    $nacBtnCheckCn.Add_Click({
+    $nacBtnCheckCn.Add_Click(({
         & $ClearOutput
         $cn = $nacTxtCn.Text.Trim()
         $srv = $nacCboServer.SelectedItem
         if ([string]::IsNullOrEmpty($cn)) {
-            & $AppendColor "[!] Introduce un CN." ([System.Drawing.Color]::Tomato)
+            & $AppendColor "WARN: Introduce un CN." ([System.Drawing.Color]::Tomato)
             return
         }
-        & $AppendColor "[*] Buscando CN '$cn' en servidor '$srv'..." ([System.Drawing.Color]::Cyan)
+        & $AppendColor "INFO: Buscando CN '$cn' en servidor '$srv'..." ([System.Drawing.Color]::Cyan)
         try {
             $ldapPath = $nacPaths[$srv]
             $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
@@ -1810,9 +1808,9 @@ function Show-NacRemediationForm {
             $ds.SearchScope = [System.DirectoryServices.SearchScope]::Subtree
             $results = $ds.FindAll()
             if ($results.Count -eq 0) {
-                & $AppendColor "[!] CN '$cn' no encontrado en NAC ($srv)." ([System.Drawing.Color]::Yellow)
+                & $AppendColor "WARN: CN '$cn' no encontrado en NAC ($srv)." ([System.Drawing.Color]::Yellow)
             } else {
-                & $AppendColor "[+] Encontrados $($results.Count) resultado(s):" ([System.Drawing.Color]::LightGreen)
+                & $AppendColor "OK: Encontrados $($results.Count) resultado(s):" ([System.Drawing.Color]::LightGreen)
                 foreach ($r in $results) {
                     & $AppendColor "" $cWhite
                     & $ShowResult $r $ldapPath
@@ -1820,12 +1818,12 @@ function Show-NacRemediationForm {
             }
             $results.Dispose()
         } catch {
-            & $AppendColor "[ERROR] $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+            & $AppendColor "ERROR: $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
         }
-    })
+    }).GetNewClosure())
 
     # ── Logica Add Device ────────────────────────────────────────
-    $nacBtnAdd.Add_Click({
+    $nacBtnAdd.Add_Click(({
         & $ClearOutput
         $mac = $nacTxtMac.Text.Trim().ToLower()
         $cn  = $nacTxtCn.Text.Trim()
@@ -1834,10 +1832,10 @@ function Show-NacRemediationForm {
         # Si la MAC esta vacia, intentar resolverla desde ADLDS por CN
         if ([string]::IsNullOrEmpty($mac)) {
             if ([string]::IsNullOrEmpty($cn)) {
-                & $AppendColor "[!] Introduce al menos MAC o CN." ([System.Drawing.Color]::Tomato)
+                & $AppendColor "WARN: Introduce al menos MAC o CN." ([System.Drawing.Color]::Tomato)
                 return
             }
-            & $AppendColor "[*] MAC vacia — buscando networkAddress por CN '$cn'..." ([System.Drawing.Color]::Cyan)
+            & $AppendColor "INFO: MAC vacia, buscando networkAddress por CN '$cn'..." ([System.Drawing.Color]::Cyan)
             try {
                 $ldapPath = $nacPaths[$srv]
                 $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
@@ -1849,30 +1847,30 @@ function Show-NacRemediationForm {
                 if ($found -and $found.Properties["networkAddress"].Count -gt 0) {
                     $mac = $found.Properties["networkAddress"][0].ToString().ToLower()
                     $nacTxtMac.Text = $mac
-                    & $AppendColor "[+] MAC encontrada en ADLDS: $mac" ([System.Drawing.Color]::LightGreen)
+                    & $AppendColor "OK: MAC encontrada en ADLDS: $mac" ([System.Drawing.Color]::LightGreen)
                 } else {
-                    & $AppendColor "[!] No se encontro networkAddress para CN '$cn'." ([System.Drawing.Color]::Yellow)
+                    & $AppendColor "WARN: No se encontro networkAddress para CN '$cn'." ([System.Drawing.Color]::Yellow)
                     return
                 }
             } catch {
-                & $AppendColor "[ERROR] $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+                & $AppendColor "ERROR: $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
                 return
             }
         }
 
         # Validar formato MAC (xx:xx:xx:xx:xx:xx)
         if ($mac -notmatch '^([0-9a-f]{2}:){5}([0-9a-f]{2})$') {
-            & $AppendColor "[!] Formato MAC invalido. Usa aa:bb:cc:dd:ee:ff" ([System.Drawing.Color]::Tomato)
+            & $AppendColor "WARN: Formato MAC invalido. Usa aa:bb:cc:dd:ee:ff" ([System.Drawing.Color]::Tomato)
             return
         }
 
         # Requerir CN para crear el objeto
         if ([string]::IsNullOrEmpty($cn)) {
-            & $AppendColor "[!] CN requerido para crear el dispositivo." ([System.Drawing.Color]::Tomato)
+            & $AppendColor "WARN: CN requerido para crear el dispositivo." ([System.Drawing.Color]::Tomato)
             return
         }
 
-        & $AppendColor "[*] Creando dispositivo CN=$cn MAC=$mac en Remediation ($srv)..." ([System.Drawing.Color]::Cyan)
+        & $AppendColor "INFO: Creando dispositivo CN=$cn MAC=$mac en Remediation ($srv)..." ([System.Drawing.Color]::Cyan)
         try {
             $remPath = $nacRemPaths[$srv]
             $objOU   = [ADSI]$remPath
@@ -1883,20 +1881,20 @@ function Show-NacRemediationForm {
             $newDev.Put("networkAddress",      $mac)
             $newDev.Put("adminDisplayName",    "$env:USERDOMAIN\$env:USERNAME")
             $newDev.SetInfo()
-            & $AppendColor "[+] Dispositivo creado correctamente en Remediation ($srv)." ([System.Drawing.Color]::LightGreen)
+            & $AppendColor "OK: Dispositivo creado correctamente en Remediation ($srv)." ([System.Drawing.Color]::LightGreen)
             & $AppendColor "    CN  : $cn" $cWhite
             & $AppendColor "    MAC : $mac" $cWhite
             & $AppendColor "    User: $env:USERDOMAIN\$env:USERNAME" $cSilver
         } catch {
-            & $AppendColor "[ERROR] No se pudo crear el dispositivo: $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
+            & $AppendColor "ERROR: No se pudo crear el dispositivo: $($_.Exception.Message)" ([System.Drawing.Color]::Tomato)
         }
-    })
+    }).GetNewClosure())
 
     # ── Boton Limpiar ────────────────────────────────────────────
-    $nacBtnClear.Add_Click({ & $ClearOutput })
+    $nacBtnClear.Add_Click(({ & $ClearOutput }).GetNewClosure())
 
     # ── Mensaje de bienvenida ────────────────────────────────────
-    & $AppendColor "NAC Remediation — herramienta de gestion de dispositivos ADLDS" $cSilver
+    & $AppendColor "NAC Remediation - herramienta de gestion de dispositivos ADLDS" $cSilver
     & $AppendColor "Selecciona servidor, introduce MAC o CN y usa los botones." $cSilver
     & $AppendColor "" $cWhite
 
