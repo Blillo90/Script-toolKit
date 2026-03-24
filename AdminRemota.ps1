@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.9 (GUI)
+    Herramienta de administracion remota unificada v2.10.10 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.9
+    2.10.10
 #>
 
 [CmdletBinding()]
@@ -2165,13 +2165,26 @@ $script:EquiposFile = Join-Path $_equiposDir "equipos_seguimiento.json"
 
 # ── Helpers del ListView de equipos ──────────────────────────────
 
-# Resuelve la IP actual del hostname consultando el servidor DNS directamente,
-# sin usar el cache local del OS ni el cache de .NET.
-# Devuelve la IP como string o $null si no se resuelve.
+# Resuelve la IP actual del hostname.
+# Metodo 1: [System.Net.Dns]::GetHostAddresses - usa la pila completa del OS
+#   (hosts, DNS, NetBIOS), los mismos mecanismos que Test-Connection.
+# Metodo 2 (fallback): Resolve-DnsName directo al servidor DNS de la interfaz.
+# Devuelve la primera IPv4 util (excluye loopback y APIPA) o $null.
 function Resolve-FreshIP {
     param([string]$Hostname)
+    # Metodo 1: pila completa del OS
     try {
-        # Obtener primer servidor DNS de la interfaz activa
+        $ip = [System.Net.Dns]::GetHostAddresses($Hostname) |
+              Where-Object {
+                  $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and
+                  -not $_.ToString().StartsWith('127.')    -and
+                  -not $_.ToString().StartsWith('169.254.')
+              } |
+              Select-Object -First 1
+        if ($ip) { return $ip.ToString() }
+    } catch {}
+    # Metodo 2: Resolve-DnsName directo al servidor DNS de la interfaz activa
+    try {
         $srv = (Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
                 Where-Object { $_.ServerAddresses.Count -gt 0 } |
                 Select-Object -First 1).ServerAddresses | Select-Object -First 1
@@ -2180,8 +2193,10 @@ function Resolve-FreshIP {
         } else {
             Resolve-DnsName -Name $Hostname -Type A -DnsOnly -ErrorAction SilentlyContinue
         }
-        return ($q | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress
-    } catch { return $null }
+        $ip2 = ($q | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress
+        if ($ip2) { return $ip2 }
+    } catch {}
+    return $null
 }
 
 function Add-EquipoToList {
