@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.8 (GUI)
+    Herramienta de administracion remota unificada v2.10.9 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.8
+    2.10.9
 #>
 
 [CmdletBinding()]
@@ -1733,15 +1733,18 @@ function Show-NacRemediationForm {
 
     $global:nacRtb             = New-Object System.Windows.Forms.RichTextBox
     $global:nacRtb.Dock        = "Fill"
-    $global:nacRtb.BackColor   = [System.Drawing.Color]::Yellow  # DIAG: fondo amarillo para confirmar control visible
-    $global:nacRtb.ForeColor   = [System.Drawing.Color]::Black   # DIAG: texto negro sobre amarillo
+    $global:nacRtb.BackColor   = $cBgOut
+    $global:nacRtb.ForeColor   = $cWhite
     $global:nacRtb.Font        = $fMono
-    $global:nacRtb.ReadOnly    = $false
+    $global:nacRtb.ReadOnly    = $true
     $global:nacRtb.BorderStyle = "None"
     $global:nacRtb.ScrollBars  = "Vertical"
     $global:nacRtb.WordWrap    = $false
     $nacOutPanel.Controls.Add($global:nacRtb)
-    $global:nacRtb.BringToFront()  # DIAG: z-order explicito
+    # BringToFront en el panel Fill para que el Dock=Top (nacTop) se resuelva primero.
+    # Sin esto nacOutPanel toma todo el espacio desde y=0 solapando nacTop (mismo
+    # patron que el form principal: outputBox.BringToFront()).
+    $nacOutPanel.BringToFront()
 
     # ── Closures de escritura con referencia local al RTB ──────────
     # ── Helper: mostrar propiedades de un resultado ADLDS ─────────
@@ -1776,12 +1779,7 @@ function Show-NacRemediationForm {
 
     # ── Logica Check MAC ─────────────────────────────────────────
     $nacBtnCheckMac.Add_Click(({
-        # DIAG-A: escritura directa sin AppendColor (comprueba que $global:nacRtb es accesible y AppendText funciona)
-        $global:nacRtb.AppendText("DIAG-A: Check MAC event OK. RTB directo funciona.`r`n")
-        $global:nacRtb.Refresh()
-        # DIAG-B: via AppendColor (comprueba que & $AppendColor funciona desde GetNewClosure)
-        & $AppendColor "DIAG-B: AppendColor desde GetNewClosure OK" ([System.Drawing.Color]::Blue)
-        # & $ClearOutput  # DIAG: desactivado para no borrar el diagnostico
+        & $ClearOutput
         & $AppendColor "Check MAC clicked" ([System.Drawing.Color]::White)
         $mac = $nacTxtMac.Text.Trim().ToLower()
         $srv = $nacCboServer.SelectedItem
@@ -1817,12 +1815,7 @@ function Show-NacRemediationForm {
 
     # ── Logica Check CN ──────────────────────────────────────────
     $nacBtnCheckCn.Add_Click(({
-        # DIAG-A: escritura directa
-        $global:nacRtb.AppendText("DIAG-A: Check CN event OK. RTB directo funciona.`r`n")
-        $global:nacRtb.Refresh()
-        # DIAG-B: via AppendColor
-        & $AppendColor "DIAG-B: AppendColor desde GetNewClosure OK" ([System.Drawing.Color]::Blue)
-        # & $ClearOutput  # DIAG: desactivado
+        & $ClearOutput
         & $AppendColor "Check CN clicked" ([System.Drawing.Color]::White)
         $cn = $nacTxtCn.Text.Trim()
         $srv = $nacCboServer.SelectedItem
@@ -1928,17 +1921,10 @@ function Show-NacRemediationForm {
     $nacBtnClear.Add_Click(({ & $ClearOutput }).GetNewClosure())
 
     # ── Mensaje de bienvenida ─────────────────────────────────────
-    # DIAG: los AppendColor se movieron al evento Shown porque antes de ShowDialog
-    # el RichTextBox no tiene handle y AppendText no persiste (Bug confirmado).
-    # Add_Shown se dispara despues de CreateHandle -> handle garantizado.
+    # Los AppendColor se emiten en Add_Shown (no antes de ShowDialog) porque
+    # el handle del RichTextBox no existe hasta que ShowDialog lo crea; llamar
+    # AppendText sin handle es un no-op en .NET 4.x y el texto se pierde.
     $nacForm.Add_Shown(({
-        # DIAG-SHOWN-1: escritura directa (sin AppendColor, sin GetNewClosure scope)
-        $global:nacRtb.Text = ""  # asegurar limpio
-        $global:nacRtb.AppendText("DIAG-SHOWN-1: Form.Shown OK. Handle creado. Escritura directa funciona.`r`n")
-        $nacForm.Text = "NAC Remediation [DIAG: Shown OK]"
-        # DIAG-SHOWN-2: via AppendColor (comprueba AppendColor con handle disponible)
-        & $AppendColor "DIAG-SHOWN-2: AppendColor con handle OK" ([System.Drawing.Color]::Cyan)
-        # Mensajes de bienvenida originales (ahora con handle disponible)
         & $AppendColor ">>> NAC output ready <<<" ([System.Drawing.Color]::Cyan)
         & $AppendColor "NAC Remediation - herramienta de gestion de dispositivos ADLDS" $cSilver
         & $AppendColor "Selecciona servidor, introduce MAC o CN y usa los botones." $cSilver
