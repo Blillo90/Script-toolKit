@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.13 (GUI)
+    Herramienta de administracion remota unificada v2.11.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.13
+    2.11.0
 #>
 
 [CmdletBinding()]
@@ -1558,6 +1558,178 @@ function Invoke-RemoteChkdsk {
     Append-Output "" $script:White
 }
 
+# ── Reparacion / reinstalacion del cliente SCCM ────────────────────────────────
+# Paso 1: ccmrepair.exe  -> reparacion in-place, no destructiva, sincrona (~1-2 min)
+# Paso 2: ccmsetup.exe   -> reinstalacion completa, asincrona (lanza el instalador y vuelve)
+function Invoke-SccmRepair {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    Write-Sep
+    Write-Info "SCCM Repair / Reinstall en '$ComputerName'"
+    Write-Sep
+
+    # Detectar VPN: WinRM/WMI suele estar bloqueado en segmentos VPN
+    $zone = Get-TargetNetworkZone $ComputerName
+    if ($zone -eq 'VPN') {
+        Write-Warn "Equipo conectado por VPN."
+        Write-Info "  La ejecucion remota de ccmrepair/ccmsetup puede no estar disponible (WinRM bloqueado)."
+        Write-Info "  Se intentara igualmente si confirmas, pero puede fallar."
+        Append-Output "" $script:White
+    }
+
+    # ── Paso 1: ccmrepair ────────────────────────────────────────────────────────
+    if (Confirm-Action (
+        "Paso 1 de 2 - Reparacion del cliente SCCM en '$ComputerName':`n`n" +
+        "  Ejecutara:  C:\Windows\CCM\ccmrepair.exe`n`n" +
+        "  - Repara el cliente SCCM sin desinstalarlo.`n" +
+        "  - No destructivo: mantiene politicas y cache.`n" +
+        "  - Duracion estimada: 1-3 minutos.`n`n" +
+        "¿Ejecutar ccmrepair ahora?"
+    ) "SCCM Repair") {
+
+        Write-Info "[1/2] Verificando ruta C:\Windows\CCM\ en '$ComputerName'..."
+        Set-Status "Verificando CCM en '$ComputerName'..." ([System.Drawing.Color]::Yellow)
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $pathCheck = $null
+        try {
+            $pathCheck = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+                return Test-Path 'C:\Windows\CCM\ccmrepair.exe'
+            }
+        } catch {
+            Write-Fail "No se pudo verificar la ruta en '$ComputerName': $($_.Exception.Message)"
+            if ($zone -eq 'VPN') {
+                Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall."
+            }
+            $pathCheck = $false
+        }
+
+        if (-not $pathCheck) {
+            Write-Fail "C:\Windows\CCM\ccmrepair.exe no encontrado en '$ComputerName'."
+            Write-Info "  El cliente SCCM puede no estar instalado o la ruta es diferente."
+        } else {
+            Write-Ok   "  ccmrepair.exe localizado."
+            Write-Info "[1/2] Ejecutando ccmrepair.exe en '$ComputerName'..."
+            Write-Info "  Espera - puede tardar 1-3 minutos..."
+            Set-Status "ccmrepair en curso en '$ComputerName'..." ([System.Drawing.Color]::Yellow)
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $repairResult = $null
+            try {
+                # ccmrepair es sincrono: esperar hasta 5 minutos antes de timeout
+                $sessOpt = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 300000
+                $repairResult = Invoke-Command -ComputerName $ComputerName `
+                    -SessionOption $sessOpt -ErrorAction Stop -ScriptBlock {
+                        try {
+                            $proc = Start-Process -FilePath 'C:\Windows\CCM\ccmrepair.exe' `
+                                                  -Wait -PassThru -ErrorAction Stop
+                            return @{ ExitCode = $proc.ExitCode; Error = $null }
+                        } catch {
+                            return @{ ExitCode = -1; Error = $_.Exception.Message }
+                        }
+                    }
+            } catch {
+                Write-Fail "Error al ejecutar ccmrepair remotamente: $($_.Exception.Message)"
+                if ($zone -eq 'VPN') {
+                    Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall."
+                }
+            }
+
+            if ($repairResult) {
+                if ($repairResult.Error) {
+                    Write-Fail "ccmrepair fallo: $($repairResult.Error)"
+                    Set-Status "ccmrepair ERROR en '$ComputerName'" ([System.Drawing.Color]::Tomato)
+                } elseif ($repairResult.ExitCode -eq 0) {
+                    Write-Ok  "[1/2] ccmrepair completado correctamente. ExitCode=0"
+                    Set-Status "ccmrepair OK en '$ComputerName'" ([System.Drawing.Color]::LightGreen)
+                } else {
+                    Write-Warn "[1/2] ccmrepair finalizo con ExitCode=$($repairResult.ExitCode)."
+                    Write-Info "  ExitCode distinto de 0 puede indicar reinicio pendiente o aviso menor."
+                    Set-Status "ccmrepair WARN en '$ComputerName'" ([System.Drawing.Color]::Yellow)
+                }
+            }
+        }
+        Append-Output "" $script:White
+    }
+
+    # ── Paso 2: ccmsetup (reinstalacion completa) ─────────────────────────────────
+    Write-Sep
+    if (Confirm-Action (
+        "Paso 2 de 2 - Reinstalacion completa del cliente SCCM en '$ComputerName':`n`n" +
+        "  Ejecutara:  C:\Windows\CCMSetup\ccmsetup.exe`n`n" +
+        "  - Reinstala el cliente SCCM desde cero.`n" +
+        "  - MAS agresivo que ccmrepair: desinstala y vuelve a instalar.`n" +
+        "  - El proceso se lanza en segundo plano en el equipo remoto.`n" +
+        "  - Puede tardar 5-15 minutos en completarse.`n" +
+        "  - Monitorizar progreso en: C:\Windows\CCMSetup\Logs\ccmsetup.log`n`n" +
+        "¿Ejecutar ccmsetup ahora?"
+    ) "SCCM Reinstall") {
+
+        Write-Info "[2/2] Verificando ruta C:\Windows\CCMSetup\ en '$ComputerName'..."
+        Set-Status "Verificando CCMSetup en '$ComputerName'..." ([System.Drawing.Color]::Yellow)
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $pathCheck2 = $null
+        try {
+            $pathCheck2 = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+                return Test-Path 'C:\Windows\CCMSetup\ccmsetup.exe'
+            }
+        } catch {
+            Write-Fail "No se pudo verificar la ruta en '$ComputerName': $($_.Exception.Message)"
+            if ($zone -eq 'VPN') {
+                Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall."
+            }
+            $pathCheck2 = $false
+        }
+
+        if (-not $pathCheck2) {
+            Write-Fail "C:\Windows\CCMSetup\ccmsetup.exe no encontrado en '$ComputerName'."
+            Write-Info "  El instalador SCCM puede no estar cacheado en el equipo."
+            Write-Info "  Alternativa: forzar descarga via Software Center o consola SCCM."
+        } else {
+            Write-Ok   "  ccmsetup.exe localizado."
+            Write-Info "[2/2] Lanzando ccmsetup.exe en '$ComputerName' (proceso en segundo plano)..."
+            Set-Status "Lanzando ccmsetup en '$ComputerName'..." ([System.Drawing.Color]::Yellow)
+            [System.Windows.Forms.Application]::DoEvents()
+
+            $setupResult = $null
+            try {
+                $setupResult = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+                    try {
+                        # ccmsetup es asincrono: Start-Process sin -Wait intencionado
+                        Start-Process -FilePath 'C:\Windows\CCMSetup\ccmsetup.exe' `
+                                      -ErrorAction Stop | Out-Null
+                        return @{ OK = $true; Error = $null }
+                    } catch {
+                        return @{ OK = $false; Error = $_.Exception.Message }
+                    }
+                }
+            } catch {
+                Write-Fail "Error al lanzar ccmsetup remotamente: $($_.Exception.Message)"
+                if ($zone -eq 'VPN') {
+                    Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall."
+                }
+            }
+
+            if ($setupResult) {
+                if ($setupResult.Error) {
+                    Write-Fail "[2/2] ccmsetup no pudo iniciarse: $($setupResult.Error)"
+                    Set-Status "ccmsetup ERROR en '$ComputerName'" ([System.Drawing.Color]::Tomato)
+                } else {
+                    Write-Ok  "[2/2] ccmsetup lanzado correctamente en '$ComputerName'."
+                    Write-Info "  La instalacion continua en segundo plano en el equipo remoto."
+                    Write-Info "  Log de progreso: C:\Windows\CCMSetup\Logs\ccmsetup.log"
+                    Set-Status "ccmsetup lanzado en '$ComputerName'" ([System.Drawing.Color]::LightGreen)
+                }
+            }
+        }
+        Append-Output "" $script:White
+    }
+
+    Write-Sep
+    Append-Output "" $script:White
+}
+
 #endregion
 
 #region ═══════════════════════════════════════════════════════════
@@ -2135,6 +2307,7 @@ $cboMaintenance.Size             = New-Object System.Drawing.Size(385, 26)
 $cboMaintenance.Items.AddRange(@(
     "GPUpdate /force",
     "Ciclos SCCM",
+    "SCCM Repair / Reinstall",
     "Reparacion sistema (DISM + SFC)",
     "ChkDsk /r"
 ))
@@ -2565,6 +2738,11 @@ $btnExecute.Add_Click({
                         Set-Status "Sin respuesta SCCM en '$target'" ([System.Drawing.Color]::Yellow)
                     }
                 }
+        }
+        "SCCM Repair / Reinstall" {
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "SCCM Repair / Reinstall en '$target'..." `
+                -Action    { Invoke-SccmRepair -ComputerName $target }
         }
         "Reparacion sistema (DISM + SFC)" {
             Set-Progress 0 ""
