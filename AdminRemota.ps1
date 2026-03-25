@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.11 (GUI)
+    Herramienta de administracion remota unificada v2.10.12 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.11
+    2.10.12
 #>
 
 [CmdletBinding()]
@@ -2237,21 +2237,28 @@ function Add-EquipoToList {
 function Update-EquipoCard {
     param($item)
     $hostname = $item.Tag
-    # Resolver IP actual desde DNS directo (evita cache OS y cache .NET)
-    $freshIP    = Resolve-FreshIP $hostname
-    # Comprobar conectividad por IP actual; si no se resolvio, usar hostname
-    $pingTarget = if ($freshIP) { $freshIP } else { $hostname }
-    $online     = Test-Connection -ComputerName $pingTarget -Count 1 -Quiet -ErrorAction SilentlyContinue
+    # 1. Resolver IP: solo para display y clasificacion VPN/CABLE
+    $freshIP = Resolve-FreshIP $hostname
+    # 2. Ping SIEMPRE por hostname, nunca por IP.
+    #    Pingar directamente la IP puede fallar si hay firewall ICMP en ese segmento,
+    #    mientras que el hostname usa el routing completo del OS (igual que Test-Connection interno).
+    $online  = Test-Connection -ComputerName $hostname -Count 1 -Quiet -ErrorAction SilentlyContinue
     if ($online) {
         $tipo                  = if ($freshIP -and ($freshIP.StartsWith("10.142.") -or $freshIP.StartsWith("10.99."))) { "VPN" } else { "CABLE" }
         $ipStr                 = if ($freshIP) { $freshIP } else { "?" }
         $item.SubItems[0].Text = "ONLINE"
         $item.ForeColor        = [System.Drawing.Color]::LightGreen
         $item.ToolTipText      = "$hostname  |  $tipo  |  $ipStr"
+    } elseif ($freshIP) {
+        # DNS resolvio pero ICMP no responde
+        $item.SubItems[0].Text = "PING_FAIL"
+        $item.ForeColor        = [System.Drawing.Color]::Orange
+        $item.ToolTipText      = "$hostname  |  PING_FAIL  |  $freshIP"
     } else {
-        $item.SubItems[0].Text = "OFFLINE"
-        $item.ForeColor        = [System.Drawing.Color]::Tomato
-        $item.ToolTipText      = "$hostname  |  sin respuesta"
+        # No resuelve y no responde al ping
+        $item.SubItems[0].Text = "DNS_FAIL"
+        $item.ForeColor        = [System.Drawing.Color]::OrangeRed
+        $item.ToolTipText      = "$hostname  |  no resuelve (DNS_FAIL)"
     }
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -2366,24 +2373,32 @@ $btnPing.Add_Click({
     Set-Status "Haciendo ping a '$computer'..." ([System.Drawing.Color]::Yellow)
     Write-Sep
 
-    # Resolver IP actual desde DNS directo (evita cache OS y cache .NET)
-    # El hostname es la fuente de verdad; la IP es dato temporal resuelto en cada comprobacion
-    $freshIP    = Resolve-FreshIP $computer
-    $pingTarget = if ($freshIP) { $freshIP } else { $computer }
+    # 1. Resolver IP: solo para display y clasificacion VPN/CABLE
+    $freshIP = Resolve-FreshIP $computer
+    # 2. Ping SIEMPRE por hostname, nunca por IP.
+    #    Pingar directamente la IP puede fallar si hay firewall ICMP en ese segmento
+    #    mientras que el hostname usa el routing completo del OS.
+    $online  = Test-Connection -ComputerName $computer -Count 1 -Quiet -ErrorAction SilentlyContinue
 
-    if (Test-Connection -ComputerName $pingTarget -Count 1 -Quiet) {
+    if ($online) {
         $tipo  = if ($freshIP -and ($freshIP.StartsWith("10.142.") -or $freshIP.StartsWith("10.99."))) { "VPN" } else { "CABLE" }
         $ipStr = if ($freshIP) { $freshIP } else { "?" }
-
         $lblPingResult.Text      = "ONLINE  |  $tipo  |  $ipStr"
         $lblPingResult.ForeColor = [System.Drawing.Color]::LightGreen
         Set-Status "  '$computer' ONLINE  |  $tipo  |  $ipStr" ([System.Drawing.Color]::LightGreen)
         Write-Ok "Ping OK -> '$computer' | Tipo: $tipo | IP: $ipStr"
+    } elseif ($freshIP) {
+        # DNS resolvio pero ICMP no responde: PING_FAIL con IP visible
+        $lblPingResult.Text      = "PING_FAIL  |  $freshIP"
+        $lblPingResult.ForeColor = [System.Drawing.Color]::Orange
+        Set-Status "  '$computer' PING_FAIL  |  $freshIP" ([System.Drawing.Color]::Orange)
+        Write-Warn "Ping FAIL -> '$computer' resuelve a $freshIP pero no responde al ping."
     } else {
-        $lblPingResult.Text      = "OFFLINE"
+        # No resuelve y no responde: DNS_FAIL
+        $lblPingResult.Text      = "DNS_FAIL"
         $lblPingResult.ForeColor = [System.Drawing.Color]::Tomato
-        Set-Status "  '$computer' OFFLINE" ([System.Drawing.Color]::Tomato)
-        Write-Fail "Ping FAIL -> '$computer' no responde."
+        Set-Status "  '$computer' DNS_FAIL (no resuelve y no responde)" ([System.Drawing.Color]::Tomato)
+        Write-Fail "DNS FAIL -> '$computer' no resuelve y no responde al ping."
     }
     Write-Sep
     Append-Output "" $white
