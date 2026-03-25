@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.12 (GUI)
+    Herramienta de administracion remota unificada v2.10.13 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.12
+    2.10.13
 #>
 
 [CmdletBinding()]
@@ -298,7 +298,7 @@ function Invoke-RemoteGpupdate {
 }
 
 # ── Comprueba que CcmExec esta Running y el namespace ClientSDK accesible ─────
-#    Devuelve "OK" o un string "ERROR: ..." para mostrar en GUI
+#    Devuelve "OK" o un string "ERROR: ..." / "VPN: ..." para mostrar en GUI
 function Test-RemoteSccmReady {
     param([Parameter(Mandatory)][string]$ComputerName)
     try {
@@ -312,8 +312,30 @@ function Test-RemoteSccmReady {
             return "OK"
         }
     } catch {
+        # Diferenciar errores de conectividad de red (WinRM, RPC, timeout) de otros errores
+        $msg = $_.Exception.Message
+        if ($msg -match 'WinRM|WSMan|WS-Man|connect|network|timeout|refused|RPC|access.?denied|firewall' ) {
+            return "ERROR: Sin acceso remoto (WinRM/red bloqueado). Posible VPN o firewall."
+        }
         return "ERROR: $_"
     }
+}
+
+# ── Detecta la zona de red del equipo basandose en su IP resuelta ──────────────
+# Devuelve: 'LOCAL' | 'VPN' | 'LAN'
+# 'VPN' si la primera IPv4 resuelta esta en los rangos VPN corporativos definidos.
+# Usa [System.Net.Dns]::GetHostAddresses (pila completa del OS, sin cache propio).
+function Get-TargetNetworkZone {
+    param([string]$Hostname)
+    if (Test-IsLocal $Hostname) { return 'LOCAL' }
+    try {
+        $ip = [System.Net.Dns]::GetHostAddresses($Hostname) |
+              Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+              Select-Object -First 1 |
+              ForEach-Object { $_.ToString() }
+        if ($ip -and ($ip.StartsWith('10.142.') -or $ip.StartsWith('10.99.'))) { return 'VPN' }
+    } catch {}
+    return 'LAN'
 }
 
 # ── Lanza los ciclos SCCM estandar (scriptblock ejecutado en equipo remoto) ───
@@ -613,6 +635,16 @@ function Invoke-MasterCheck {
     # Solo se considera positivo si existen aplicaciones con 'Install' en AllowedActions.
     # Eso excluye Windows Updates, Feature Updates desplegados como app, y apps ya instaladas.
     Invoke-Step -Name "Centro de Software (CCM_Application)" -ScriptBlock {
+        # Detectar VPN antes de intentar WMI/WinRM remoto: en VPN esos puertos suelen estar
+        # bloqueados por firewall de segmentacion -> evitar error generico, mostrar aviso claro.
+        $zone = Get-TargetNetworkZone $script:Target
+        if ($zone -eq 'VPN') {
+            return @{
+                Status  = "WARN"
+                Details = "Equipo conectado por VPN. La comprobacion SCCM remota no esta disponible en este segmento de red (WMI/WinRM bloqueado por firewall)."
+            }
+        }
+
         $diag = Test-RemoteSccmReady -ComputerName $script:Target
         if ($diag -ne "OK") { return @{ Status="ERROR"; Details=$diag } }
 
@@ -698,16 +730,40 @@ function Invoke-SoftwareCheck {
     Write-Info "Buscando '$appName' en '$ComputerName'..."
     Write-Sep
 
+    # Detectar VPN: avisar antes de intentar WMI/WinRM que pueden estar bloqueados.
+    $zone = Get-TargetNetworkZone $ComputerName
+    if ($zone -eq 'VPN') {
+        Write-Warn "Equipo conectado por VPN. La comprobacion SCCM remota puede no estar disponible."
+        Write-Info "  WMI y WinRM suelen estar bloqueados en segmentos VPN corporativos."
+        Write-Info "  Se intentara igualmente, pero puede fallar."
+    }
+
     # Diagnostico previo (reutiliza helper comun)
     $diag = Test-RemoteSccmReady -ComputerName $ComputerName
     if ($diag -ne "OK") {
-        Write-Fail "No se puede consultar el Centro de Software: $diag"
+        if ($zone -eq 'VPN') {
+            Write-Fail "No se puede acceder al cliente SCCM remotamente (posible VPN o firewall)."
+            Write-Info "  Detalle tecnico: $diag"
+        } else {
+            Write-Fail "No se puede consultar el Centro de Software: $diag"
+        }
         return
     }
 
-    $apps = Get-CimInstance -ComputerName $ComputerName -Namespace "root\ccm\ClientSDK" `
-                            -ClassName "CCM_Application" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "*$appName*" }
+    $apps = $null
+    try {
+        $apps = Get-CimInstance -ComputerName $ComputerName -Namespace "root\ccm\ClientSDK" `
+                                -ClassName "CCM_Application" -ErrorAction Stop |
+                Where-Object { $_.Name -like "*$appName*" }
+    } catch {
+        if ($zone -eq 'VPN') {
+            Write-Fail "No se puede acceder al cliente SCCM remotamente (posible VPN o firewall)."
+            Write-Info "  Detalle tecnico: $($_.Exception.Message)"
+        } else {
+            Write-Fail "Error al consultar CCM_Application: $($_.Exception.Message)"
+        }
+        return
+    }
 
     if ($apps) {
         Write-Ok "Aplicacion(es) encontrada(s) en Centro de Software:"
