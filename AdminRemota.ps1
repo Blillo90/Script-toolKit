@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.10.10 (GUI)
+    Herramienta de administracion remota unificada v2.10.11 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.10.10
+    2.10.11
 #>
 
 [CmdletBinding()]
@@ -610,19 +610,44 @@ function Invoke-MasterCheck {
     }
 
     # Step 5: Centro de Software
+    # Solo se considera positivo si existen aplicaciones con 'Install' en AllowedActions.
+    # Eso excluye Windows Updates, Feature Updates desplegados como app, y apps ya instaladas.
     Invoke-Step -Name "Centro de Software (CCM_Application)" -ScriptBlock {
         $diag = Test-RemoteSccmReady -ComputerName $script:Target
         if ($diag -ne "OK") { return @{ Status="ERROR"; Details=$diag } }
 
         Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock {
-            $app = Get-CimInstance -Namespace "root\ccm\ClientSDK" -ClassName "CCM_Application" `
-                                   -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($app) {
-                $ver = (Get-CimInstance -Namespace "root\ccm" -ClassName "SMS_Client" `
-                                        -ErrorAction SilentlyContinue).ClientVersion
-                return @{ Status="OK"; Details="Namespace accesible | ClientVersion=$ver" }
+            $allCcm = @(Get-CimInstance -Namespace "root\ccm\ClientSDK" -ClassName "CCM_Application" `
+                                        -ErrorAction SilentlyContinue)
+
+            # Aplicaciones realmente disponibles para instalar:
+            # AllowedActions debe contener 'Install' -> no instaladas y el usuario puede instalarlas.
+            # Updates de Windows / Feature Updates no tienen 'Install' en AllowedActions.
+            $installable = @($allCcm | Where-Object { $_.AllowedActions -contains 'Install' })
+
+            if ($installable.Count -gt 0) {
+                $ver     = (Get-CimInstance -Namespace "root\ccm" -ClassName "SMS_Client" `
+                                            -ErrorAction SilentlyContinue).ClientVersion
+                $ejemplos = ($installable | Select-Object -First 3 |
+                             ForEach-Object { $_.Name }) -join ' | '
+                return @{
+                    Status  = "OK"
+                    Details = ("Aplicaciones disponibles para instalar: {0} | ClientVersion={1} | Ejemplos: {2}" `
+                               -f $installable.Count, $ver, $ejemplos)
+                }
             }
-            return @{ Status="WARN"; Details="CcmExec Running y namespace OK, pero sin apps en CCM_Application" }
+
+            # Habia contenido pero ninguno con accion Install (solo updates u otros)
+            if ($allCcm.Count -gt 0) {
+                return @{
+                    Status  = "WARN"
+                    Details = ("Sin aplicaciones disponibles para instalar. " +
+                               "Solo hay actualizaciones u otros elementos ({0} entradas en CCM_Application)." `
+                               -f $allCcm.Count)
+                }
+            }
+
+            return @{ Status="WARN"; Details="CcmExec Running y namespace OK, pero sin contenido en CCM_Application" }
         }
     }
 
