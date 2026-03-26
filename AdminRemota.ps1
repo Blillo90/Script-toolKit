@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.12.0 (GUI)
+    Herramienta de administracion remota unificada v2.13.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.12.0
+    2.13.0
 #>
 
 [CmdletBinding()]
@@ -2195,30 +2195,69 @@ function Show-NacRemediationForm {
 
 # ════════════════════════════════════════════════════════════════════
 # LAYOUT PRINCIPAL
-# El topPanel se divide en 6 sub-paneles funcionales apilados:
-#   pTitle    (y=  0, h=48)  Cabecera: titulo + subtitulo
-#   pContext  (y= 48, h=34)  Equipo: textbox + Ping + resultado
-#   pOptions  (y= 82, h=33)  Modo Nacional/Divisional + NAC (avanzado)
-#   sep       (y=115, h= 1)  Separador visual
-#   pDiag     (y=116, h=32)  Diagnostico (Masterizacion, SCCM, Info) | Acciones (USB, Reiniciar)
-#   pMaint    (y=148, h=32)  Mantenimiento: combo + Ejecutar | Limpiar (utilidad)
-#   pProg     (y=180, h=30)  Progreso + Cancelar (vinculado a operacion en curso)
-# Total topPanel.Height = 210
+#
+# Zona superior (topPanel)
+#   Se usa un TableLayoutPanel (tlpTop, 1 col × 7 filas) para que cada
+#   fila tenga altura fija garantizada sin depender del z-order de WinForms.
+#   Filas:
+#     0  h=48  Titulo + subtitulo
+#     1  h=30  Equipo: + textbox + Ping + resultado conectividad
+#     2  h=28  Modo: Nacional/Divisional  |  NAC Remediation (derecha)
+#     3  h=2   Separador visual
+#     4  h=30  Diagnostico: Masterizacion, Software SCCM, Info del Sistema
+#     5  h=30  Acciones: Borrar USB, Reiniciar, combo mantenimiento, Ejecutar
+#     6  h=34  Estado: progressBar, Cancelar, progressLabel, Limpiar
+#   Total topPanel.Height = 202
+#
+# Panel derecho (rightPanel)
+#   TableLayoutPanel (tlpRight, 1 col × 3 filas):
+#     0  h=26   Cabecera "Equipos en seguimiento"
+#     1  h=*    ListView (espacio restante)
+#     2  h=96   Toolbar: Anadir, Quitar, Refrescar
+#   El TLP garantiza que la cabecera no solapa la lista.
+#
 # ════════════════════════════════════════════════════════════════════
 
-# ── Panel superior ────────────────────────────────────────────────
+# ── Bloque superior principal ─────────────────────────────────────
 $topPanel           = New-Object System.Windows.Forms.Panel
 $topPanel.Dock      = "Top"
-$topPanel.Height    = 210
+$topPanel.Height    = 202
 $topPanel.BackColor = $bgPanel
 $form.Controls.Add($topPanel)
 
-# ── [pTitle] Bloque cabecera: titulo y subtitulo (y=0, h=48) ─────
+# TableLayoutPanel: garantiza filas con altura fija, sin solapamientos por z-order
+$tlpTop                 = New-Object System.Windows.Forms.TableLayoutPanel
+$tlpTop.Dock            = "Fill"
+$tlpTop.ColumnCount     = 1
+$tlpTop.RowCount        = 7
+$tlpTop.BackColor       = [System.Drawing.Color]::Transparent
+$tlpTop.Margin          = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Padding         = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.CellBorderStyle = [System.Windows.Forms.TableLayoutPanelCellBorderStyle]::None
+$topPanel.Controls.Add($tlpTop)
+
+# Columna unica al 100%
+$tlpTop.ColumnStyles.Clear()
+$_cs          = New-Object System.Windows.Forms.ColumnStyle
+$_cs.SizeType = [System.Windows.Forms.SizeType]::Percent
+$_cs.Width    = 100
+[void]$tlpTop.ColumnStyles.Add($_cs)
+
+# Filas: alturas fijas en pixeles
+$tlpTop.RowStyles.Clear()
+foreach ($_h in @(48, 30, 28, 2, 30, 30, 34)) {
+    $_rs          = New-Object System.Windows.Forms.RowStyle
+    $_rs.SizeType = [System.Windows.Forms.SizeType]::Absolute
+    $_rs.Height   = $_h
+    [void]$tlpTop.RowStyles.Add($_rs)
+}
+
+# ── Fila 0: cabecera (titulo + subtitulo) ─────────────────────────
 $pTitle           = New-Object System.Windows.Forms.Panel
-$pTitle.Location  = New-Object System.Drawing.Point(0, 0)
-$pTitle.Size      = New-Object System.Drawing.Size(2000, 48)
+$pTitle.Dock      = "Fill"
 $pTitle.BackColor = [System.Drawing.Color]::Transparent
-$topPanel.Controls.Add($pTitle)
+$pTitle.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Controls.Add($pTitle, 0, 0)
 
 $lblTitle           = New-Object System.Windows.Forms.Label
 $lblTitle.Text      = "  ADMINISTRACION REMOTA"
@@ -2236,39 +2275,37 @@ $lblSub.AutoSize    = $true
 $lblSub.Location    = New-Object System.Drawing.Point(8, 28)
 $pTitle.Controls.Add($lblSub)
 
-# ── [pContext] Bloque contexto: equipo + Ping + resultado (y=48, h=34) ──
-# Agrupa la entrada de nombre de equipo, el boton Ping y el label de estado.
+# ── Fila 1: contexto - equipo + Ping + resultado ──────────────────
 $pContext           = New-Object System.Windows.Forms.Panel
-$pContext.Location  = New-Object System.Drawing.Point(0, 48)
-$pContext.Size      = New-Object System.Drawing.Size(2000, 34)
+$pContext.Dock      = "Fill"
 $pContext.BackColor = [System.Drawing.Color]::Transparent
-$topPanel.Controls.Add($pContext)
+$pContext.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Controls.Add($pContext, 0, 1)
 
 $lblEquipo           = New-Object System.Windows.Forms.Label
 $lblEquipo.Text      = "Equipo:"
 $lblEquipo.ForeColor = $silver
 $lblEquipo.AutoSize  = $true
-$lblEquipo.Location  = New-Object System.Drawing.Point(10, 10)
+$lblEquipo.Location  = New-Object System.Drawing.Point(10, 8)
 $pContext.Controls.Add($lblEquipo)
 
 $txtEquipo             = New-Object System.Windows.Forms.TextBox
 $txtEquipo.Width       = 240
-$txtEquipo.Location    = New-Object System.Drawing.Point(68, 6)
+$txtEquipo.Location    = New-Object System.Drawing.Point(68, 4)
 $txtEquipo.BackColor   = [System.Drawing.Color]::FromArgb(55, 55, 58)
 $txtEquipo.ForeColor   = $white
 $txtEquipo.BorderStyle = "FixedSingle"
 $txtEquipo.Font        = $fontUI
 $pContext.Controls.Add($txtEquipo)
 
-# Ping: boton compacto inmediatamente a la derecha del textbox
-$btnPing = New-FlatButton "Ping" 314 3 62 28 $btnGray
+$btnPing = New-FlatButton "Ping" 315 1 62 28 $btnGray
 $pContext.Controls.Add($btnPing)
 
 # Label de resultado: ONLINE|VPN|IP / PING_FAIL|IP / DNS_FAIL
 $lblPingResult             = New-Object System.Windows.Forms.Label
 $lblPingResult.Text        = ""
-$lblPingResult.Location    = New-Object System.Drawing.Point(384, 9)
-$lblPingResult.Size        = New-Object System.Drawing.Size(555, 20)
+$lblPingResult.Location    = New-Object System.Drawing.Point(385, 8)
+$lblPingResult.Size        = New-Object System.Drawing.Size(530, 18)
 $lblPingResult.ForeColor   = $white
 $lblPingResult.BackColor   = [System.Drawing.Color]::Transparent
 $lblPingResult.Font        = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
@@ -2277,20 +2314,18 @@ $pContext.Controls.Add($lblPingResult)
 # Referencia compartida para closures del panel lateral
 $script:EquipoInputBox = $txtEquipo
 
-# ── [pOptions] Bloque opciones: modo + NAC Remediation (y=82, h=33) ──
-# Izquierda: selector de modo de operacion.
-# Derecha: NAC Remediation como herramienta avanzada, separada visualmente.
+# ── Fila 2: opciones - Modo  |  NAC Remediation (derecha) ─────────
 $pOptions           = New-Object System.Windows.Forms.Panel
-$pOptions.Location  = New-Object System.Drawing.Point(0, 82)
-$pOptions.Size      = New-Object System.Drawing.Size(2000, 33)
+$pOptions.Dock      = "Fill"
 $pOptions.BackColor = [System.Drawing.Color]::Transparent
-$topPanel.Controls.Add($pOptions)
+$pOptions.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Controls.Add($pOptions, 0, 2)
 
 $lblModo           = New-Object System.Windows.Forms.Label
 $lblModo.Text      = "Modo:"
 $lblModo.ForeColor = $silver
 $lblModo.AutoSize  = $true
-$lblModo.Location  = New-Object System.Drawing.Point(10, 9)
+$lblModo.Location  = New-Object System.Drawing.Point(10, 7)
 $pOptions.Controls.Add($lblModo)
 
 $rbNacional           = New-Object System.Windows.Forms.RadioButton
@@ -2298,7 +2333,7 @@ $rbNacional.Text      = "Nacional"
 $rbNacional.ForeColor = $white
 $rbNacional.AutoSize  = $true
 $rbNacional.Checked   = $true
-$rbNacional.Location  = New-Object System.Drawing.Point(58, 6)
+$rbNacional.Location  = New-Object System.Drawing.Point(58, 4)
 $rbNacional.Font      = $fontSmall
 $pOptions.Controls.Add($rbNacional)
 
@@ -2306,7 +2341,7 @@ $rbDivisional           = New-Object System.Windows.Forms.RadioButton
 $rbDivisional.Text      = "Divisional"
 $rbDivisional.ForeColor = $white
 $rbDivisional.AutoSize  = $true
-$rbDivisional.Location  = New-Object System.Drawing.Point(148, 6)
+$rbDivisional.Location  = New-Object System.Drawing.Point(148, 4)
 $rbDivisional.Font      = $fontSmall
 $pOptions.Controls.Add($rbDivisional)
 
@@ -2314,53 +2349,50 @@ $rbNacional.Add_CheckedChanged({
     $script:Modo = if ($rbNacional.Checked) { "Nacional" } else { "Divisional" }
 })
 
-# NAC Remediation: herramienta avanzada, ubicada a la derecha para menor prominencia
-$btnNAC = New-FlatButton "  NAC Remediation" 660 3 150 27 ([System.Drawing.Color]::FromArgb(80, 0, 120))
+# NAC: herramienta avanzada, desplazada a la derecha para menor prominencia
+$btnNAC = New-FlatButton "  NAC Remediation" 660 0 150 28 ([System.Drawing.Color]::FromArgb(80, 0, 120))
 $btnNAC.Add_Click({ Show-NacRemediationForm })
 $pOptions.Controls.Add($btnNAC)
 
-# ── Separador visual entre opciones y botones de accion ───────────
-$sep           = New-Object System.Windows.Forms.Panel
-$sep.Location  = New-Object System.Drawing.Point(0, 115)
-$sep.Size      = New-Object System.Drawing.Size(2000, 1)
-$sep.BackColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
-$topPanel.Controls.Add($sep)
+# ── Fila 3: separador visual ──────────────────────────────────────
+$pSep           = New-Object System.Windows.Forms.Panel
+$pSep.Dock      = "Fill"
+$pSep.BackColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
+$pSep.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Controls.Add($pSep, 0, 3)
 
-# ── [pDiag] Bloque diagnostico + acciones (y=116, h=32) ──────────
-# Izquierda: botones de diagnostico (tamano uniforme 160/150px, color accent/verde).
-# Derecha:   acciones operativas (USB, Reiniciar).
+# ── Fila 4: diagnostico ───────────────────────────────────────────
+# Botones de diagnostico con ancho uniforme (155px).
 $pDiag           = New-Object System.Windows.Forms.Panel
-$pDiag.Location  = New-Object System.Drawing.Point(0, 116)
-$pDiag.Size      = New-Object System.Drawing.Size(2000, 32)
+$pDiag.Dock      = "Fill"
 $pDiag.BackColor = [System.Drawing.Color]::Transparent
-$topPanel.Controls.Add($pDiag)
+$pDiag.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Controls.Add($pDiag, 0, 4)
 
-$btnMaster   = New-FlatButton "  Masterizacion"      10 2 160 28 $accent
-$btnSoftware = New-FlatButton "  Software SCCM"     175 2 160 28 $accent
-$btnInfo     = New-FlatButton "  Info del Sistema"  340 2 150 28 ([System.Drawing.Color]::FromArgb(40, 110, 60))
-$btnUsb      = New-FlatButton "  Borrar USB"        504 2 120 28 $btnRed
-$btnRestart  = New-FlatButton "  Reiniciar"         629 2 120 28 ([System.Drawing.Color]::FromArgb(160, 80, 0))
+$btnMaster   = New-FlatButton "  Masterizacion"     10 1 155 28 $accent
+$btnSoftware = New-FlatButton "  Software SCCM"    170 1 155 28 $accent
+$btnInfo     = New-FlatButton "  Info del Sistema" 330 1 155 28 ([System.Drawing.Color]::FromArgb(40, 110, 60))
 
-foreach ($b in @($btnMaster, $btnSoftware, $btnInfo, $btnUsb, $btnRestart)) {
-    $pDiag.Controls.Add($b)
-}
+foreach ($b in @($btnMaster, $btnSoftware, $btnInfo)) { $pDiag.Controls.Add($b) }
 
-# ── [pMaint] Bloque mantenimiento (y=148, h=32) ───────────────────
-# Combo de tareas + Ejecutar como grupo principal.
-# Limpiar como utilidad secundaria, desplazada a la derecha.
-$pMaint           = New-Object System.Windows.Forms.Panel
-$pMaint.Location  = New-Object System.Drawing.Point(0, 148)
-$pMaint.Size      = New-Object System.Drawing.Size(2000, 32)
-$pMaint.BackColor = [System.Drawing.Color]::Transparent
-$topPanel.Controls.Add($pMaint)
+# ── Fila 5: acciones ──────────────────────────────────────────────
+# Borrar USB y Reiniciar a la izquierda; combo + Ejecutar a la derecha.
+$pActions           = New-Object System.Windows.Forms.Panel
+$pActions.Dock      = "Fill"
+$pActions.BackColor = [System.Drawing.Color]::Transparent
+$pActions.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Controls.Add($pActions, 0, 5)
+
+$btnUsb     = New-FlatButton "  Borrar USB"  10 1 120 28 $btnRed
+$btnRestart = New-FlatButton "  Reiniciar"  135 1 115 28 ([System.Drawing.Color]::FromArgb(160, 80, 0))
 
 $cboMaintenance               = New-Object System.Windows.Forms.ComboBox
 $cboMaintenance.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $cboMaintenance.BackColor     = [System.Drawing.Color]::FromArgb(55, 55, 58)
 $cboMaintenance.ForeColor     = $white
 $cboMaintenance.Font          = $fontSmall
-$cboMaintenance.Location      = New-Object System.Drawing.Point(10, 3)
-$cboMaintenance.Size          = New-Object System.Drawing.Size(370, 26)
+$cboMaintenance.Location      = New-Object System.Drawing.Point(258, 2)
+$cboMaintenance.Size          = New-Object System.Drawing.Size(320, 26)
 $cboMaintenance.Items.AddRange(@(
     "GPUpdate /force",
     "Ciclos SCCM",
@@ -2369,44 +2401,45 @@ $cboMaintenance.Items.AddRange(@(
     "ChkDsk /r"
 ))
 $cboMaintenance.SelectedIndex = 0
-$pMaint.Controls.Add($cboMaintenance)
+$pActions.Controls.Add($cboMaintenance)
 
-$btnExecute = New-FlatButton "  Ejecutar" 385 2 110 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
-$btnClear   = New-FlatButton "  Limpiar"  740 2  80 28 $btnGray
-$pMaint.Controls.Add($btnExecute)
-$pMaint.Controls.Add($btnClear)
+$btnExecute = New-FlatButton "  Ejecutar" 583 1 105 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
 
-# ── [pProg] Bloque progreso + Cancelar (y=180, h=30) ─────────────
-# Barra de progreso y label en la misma fila que Cancelar para asociar
-# visualmente la cancelacion a la operacion en curso.
+foreach ($b in @($btnUsb, $btnRestart, $btnExecute)) { $pActions.Controls.Add($b) }
+
+# ── Fila 6: bloque de progreso + estado ───────────────────────────
+# progressBar + Cancelar en la misma fila para asociarlos visualmente.
+# Limpiar como utilidad secundaria al extremo derecho.
 $pProg           = New-Object System.Windows.Forms.Panel
-$pProg.Location  = New-Object System.Drawing.Point(0, 180)
-$pProg.Size      = New-Object System.Drawing.Size(2000, 30)
+$pProg.Dock      = "Fill"
 $pProg.BackColor = [System.Drawing.Color]::Transparent
-$topPanel.Controls.Add($pProg)
+$pProg.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpTop.Controls.Add($pProg, 0, 6)
 
 $script:progressBar          = New-Object System.Windows.Forms.ProgressBar
-$script:progressBar.Location = New-Object System.Drawing.Point(10, 6)
-$script:progressBar.Size     = New-Object System.Drawing.Size(500, 18)
+$script:progressBar.Location = New-Object System.Drawing.Point(10, 8)
+$script:progressBar.Size     = New-Object System.Drawing.Size(430, 18)
 $script:progressBar.Minimum  = 0
 $script:progressBar.Maximum  = 100
 $script:progressBar.Value    = 0
 $script:progressBar.Style    = [System.Windows.Forms.ProgressBarStyle]::Continuous
 $pProg.Controls.Add($script:progressBar)
 
+$btnCancel         = New-FlatButton "  Cancelar" 446 3 100 28 ([System.Drawing.Color]::FromArgb(200, 100, 0))
+$btnCancel.Enabled = $false
+$pProg.Controls.Add($btnCancel)
+
 $script:progressLabel           = New-Object System.Windows.Forms.Label
-$script:progressLabel.Location  = New-Object System.Drawing.Point(516, 6)
-$script:progressLabel.Size      = New-Object System.Drawing.Size(195, 18)
+$script:progressLabel.Location  = New-Object System.Drawing.Point(552, 9)
+$script:progressLabel.Size      = New-Object System.Drawing.Size(175, 18)
 $script:progressLabel.ForeColor = $silver
 $script:progressLabel.Font      = $fontSmall
 $script:progressLabel.Text      = ""
 $script:progressLabel.TextAlign = "MiddleLeft"
 $pProg.Controls.Add($script:progressLabel)
 
-# Cancelar: en la misma fila que el progreso, no mezclado con botones principales
-$btnCancel         = New-FlatButton "  Cancelar" 716 1 100 28 ([System.Drawing.Color]::FromArgb(200, 100, 0))
-$btnCancel.Enabled = $false
-$pProg.Controls.Add($btnCancel)
+$btnClear = New-FlatButton "  Limpiar" 735 3 80 28 $btnGray
+$pProg.Controls.Add($btnClear)
 
 # ── Area de salida ────────────────────────────────────────────────
 $script:outputBox             = New-Object System.Windows.Forms.RichTextBox
@@ -2427,22 +2460,55 @@ $statusBar.Height    = 24
 $statusBar.BackColor = $accent
 $form.Controls.Add($statusBar)
 
-# ── Panel lateral derecho ─────────────────────────────────────────
-# Orden de adicion: rightPanel → rightHeader → rightBtnPanel → lvEquipos
-# El patron de docking Dock=Top + Dock=Bottom + Dock=Fill requiere este orden
-# para que el Fill ocupe el espacio central entre cabecera y toolbar inferior.
+# ── Panel de seguimiento de equipos ──────────────────────────────
+# TableLayoutPanel (tlpRight) garantiza que la cabecera no solape la lista.
+# z-order de WinForms con Dock=Top/Fill/Bottom es ambiguo en PS5.1;
+# TableLayoutPanel asigna espacio real a cada fila de forma determinista.
 $rightPanel             = New-Object System.Windows.Forms.Panel
 $rightPanel.Dock        = "Right"
 $rightPanel.Width       = 210
 $rightPanel.BackColor   = [System.Drawing.Color]::FromArgb(38, 38, 42)
 $form.Controls.Add($rightPanel)
 
-# Cabecera del panel lateral: identifica la seccion visualmente
+$tlpRight                 = New-Object System.Windows.Forms.TableLayoutPanel
+$tlpRight.Dock            = "Fill"
+$tlpRight.ColumnCount     = 1
+$tlpRight.RowCount        = 3
+$tlpRight.BackColor       = [System.Drawing.Color]::Transparent
+$tlpRight.Margin          = New-Object System.Windows.Forms.Padding(0)
+$tlpRight.Padding         = New-Object System.Windows.Forms.Padding(0)
+$tlpRight.CellBorderStyle = [System.Windows.Forms.TableLayoutPanelCellBorderStyle]::None
+$rightPanel.Controls.Add($tlpRight)
+
+$tlpRight.ColumnStyles.Clear()
+$_rc          = New-Object System.Windows.Forms.ColumnStyle
+$_rc.SizeType = [System.Windows.Forms.SizeType]::Percent
+$_rc.Width    = 100
+[void]$tlpRight.ColumnStyles.Add($_rc)
+
+$tlpRight.RowStyles.Clear()
+# Fila 0: cabecera fija 26px
+$_rr0          = New-Object System.Windows.Forms.RowStyle
+$_rr0.SizeType = [System.Windows.Forms.SizeType]::Absolute
+$_rr0.Height   = 26
+[void]$tlpRight.RowStyles.Add($_rr0)
+# Fila 1: lista ocupa todo el espacio restante
+$_rr1          = New-Object System.Windows.Forms.RowStyle
+$_rr1.SizeType = [System.Windows.Forms.SizeType]::Percent
+$_rr1.Height   = 100
+[void]$tlpRight.RowStyles.Add($_rr1)
+# Fila 2: toolbar inferior fija 96px
+$_rr2          = New-Object System.Windows.Forms.RowStyle
+$_rr2.SizeType = [System.Windows.Forms.SizeType]::Absolute
+$_rr2.Height   = 96
+[void]$tlpRight.RowStyles.Add($_rr2)
+
+# Fila 0 del TLP: cabecera
 $rightHeader             = New-Object System.Windows.Forms.Panel
-$rightHeader.Dock        = "Top"
-$rightHeader.Height      = 26
+$rightHeader.Dock        = "Fill"
 $rightHeader.BackColor   = [System.Drawing.Color]::FromArgb(28, 28, 32)
-$rightPanel.Controls.Add($rightHeader)
+$rightHeader.Margin      = New-Object System.Windows.Forms.Padding(0)
+$tlpRight.Controls.Add($rightHeader, 0, 0)
 
 $lblEquiposTitle           = New-Object System.Windows.Forms.Label
 $lblEquiposTitle.Text      = "  Equipos en seguimiento"
@@ -2452,20 +2518,7 @@ $lblEquiposTitle.Font      = $fontSmall
 $lblEquiposTitle.TextAlign = "MiddleLeft"
 $rightHeader.Controls.Add($lblEquiposTitle)
 
-# Toolbar inferior: anadir, quitar y refrescar equipos de la lista
-$rightBtnPanel           = New-Object System.Windows.Forms.Panel
-$rightBtnPanel.Dock      = "Bottom"
-$rightBtnPanel.Height    = 96
-$rightBtnPanel.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
-$rightPanel.Controls.Add($rightBtnPanel)
-
-$btnAddEquipo      = New-FlatButton "Anadir equipo"    3  3 202 26 ([System.Drawing.Color]::FromArgb(0, 100, 50))
-$btnRemoveEquipo   = New-FlatButton "Quitar selec."    3 33 202 26 $btnGray
-$btnRefreshEquipos = New-FlatButton "Refrescar estado" 3 63 202 26 ([System.Drawing.Color]::FromArgb(30, 60, 110))
-$rightBtnPanel.Controls.Add($btnAddEquipo)
-$rightBtnPanel.Controls.Add($btnRemoveEquipo)
-$rightBtnPanel.Controls.Add($btnRefreshEquipos)
-
+# Fila 1 del TLP: ListView (llena el espacio restante entre cabecera y toolbar)
 $script:lvEquipos               = New-Object System.Windows.Forms.ListView
 $script:lvEquipos.Dock          = "Fill"
 $script:lvEquipos.View          = [System.Windows.Forms.View]::Details
@@ -2478,9 +2531,24 @@ $script:lvEquipos.ForeColor     = [System.Drawing.Color]::White
 $script:lvEquipos.BorderStyle   = "None"
 $script:lvEquipos.Font          = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
 $script:lvEquipos.ShowItemToolTips = $true
+$script:lvEquipos.Margin        = New-Object System.Windows.Forms.Padding(0)
 $null = $script:lvEquipos.Columns.Add("Estado", 68)
 $null = $script:lvEquipos.Columns.Add("Equipo", 132)
-$rightPanel.Controls.Add($script:lvEquipos)
+$tlpRight.Controls.Add($script:lvEquipos, 0, 1)
+
+# Fila 2 del TLP: toolbar de gestion de equipos
+$rightBtnPanel           = New-Object System.Windows.Forms.Panel
+$rightBtnPanel.Dock      = "Fill"
+$rightBtnPanel.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
+$rightBtnPanel.Margin    = New-Object System.Windows.Forms.Padding(0)
+$tlpRight.Controls.Add($rightBtnPanel, 0, 2)
+
+$btnAddEquipo      = New-FlatButton "Anadir equipo"    3  3 202 26 ([System.Drawing.Color]::FromArgb(0, 100, 50))
+$btnRemoveEquipo   = New-FlatButton "Quitar selec."    3 33 202 26 $btnGray
+$btnRefreshEquipos = New-FlatButton "Refrescar estado" 3 63 202 26 ([System.Drawing.Color]::FromArgb(30, 60, 110))
+$rightBtnPanel.Controls.Add($btnAddEquipo)
+$rightBtnPanel.Controls.Add($btnRemoveEquipo)
+$rightBtnPanel.Controls.Add($btnRefreshEquipos)
 
 $script:outputBox.BringToFront()   # Fill ocupa el espacio restante tras Right/Bottom/Top
 
