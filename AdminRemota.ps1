@@ -2002,6 +2002,37 @@ function Invoke-Perfilazo {
     Write-Sep
     Append-Output "" $script:White
 
+    # ── Listar perfiles disponibles ──────────────────────────────────
+    Write-Info "Perfiles locales en '$ComputerName':"
+    $perfiles = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+        $excluir = @('Public', 'Default', 'Default User', 'All Users')
+        Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue |
+            Where-Object {
+                (-not $_.Special) -and
+                ($_.LocalPath -like 'C:\Users\*') -and
+                ((Split-Path $_.LocalPath -Leaf) -notin $excluir)
+            } |
+            Sort-Object LastUseTime -Descending |
+            ForEach-Object {
+                $lastUse = if ($_.LastUseTime) { $_.LastUseTime.ToString('yyyy-MM-dd HH:mm') } else { 'N/A' }
+                @{ Name=(Split-Path $_.LocalPath -Leaf); LocalPath=$_.LocalPath; Loaded=$_.Loaded; LastUse=$lastUse }
+            }
+    }
+
+    if ($perfiles) {
+        $idx = 0
+        foreach ($p in @($perfiles)) {
+            $idx++
+            $loadColor = if ($p.Loaded) { [System.Drawing.Color]::Yellow } else { [System.Drawing.Color]::LightGreen }
+            $loadStr   = if ($p.Loaded) { 'Loaded=True ' } else { 'Loaded=False' }
+            Append-Output ("  [{0:D2}] {1,-20} | {2} | {3} | LastUse={4}" -f `
+                $idx, $p.Name, $p.LocalPath, $loadStr, $p.LastUse) $loadColor
+        }
+    } else {
+        Write-Warn "No se pudieron obtener perfiles de '$ComputerName' (o no hay perfiles locales)."
+    }
+    Append-Output "" $script:White
+
     # ── Datos de entrada ─────────────────────────────────────────────
     $usuario = (Get-Input "Usuario del perfil a tratar:" "Perfilazo - Usuario" "").Trim()
     if ([string]::IsNullOrWhiteSpace($usuario)) { Write-Warn "Cancelado."; return }
