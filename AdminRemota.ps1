@@ -54,6 +54,7 @@ $script:cancelRequested = $false
 $script:Modo            = "Nacional"   # "Nacional" | "Divisional"
 $script:Target          = ""
 $script:StepResults     = New-Object System.Collections.Generic.List[object]
+$script:MastStatus      = @{}   # Name -> 'Pendiente' | 'OK' | 'Error'
 
 # Colores GUI (definidos aqui para que esten disponibles en toda la sesion)
 $script:White  = [System.Drawing.Color]::White
@@ -3136,12 +3137,32 @@ function Resolve-FreshIP {
 
 function Add-EquipoToList {
     param([string]$Name)
-    $item          = New-Object System.Windows.Forms.ListViewItem("...")
-    $item.Tag      = $Name
+    $item           = New-Object System.Windows.Forms.ListViewItem("...")
+    $item.Tag       = $Name
     $item.ForeColor = [System.Drawing.Color]::Gray
-    $null          = $item.SubItems.Add($Name)
-    $null          = $script:lvEquipos.Items.Add($item)
+    $null           = $item.SubItems.Add($Name)    # SubItems[1] = Equipo
+    $mast           = if ($script:MastStatus.ContainsKey($Name)) { $script:MastStatus[$Name] } else { '-' }
+    $null           = $item.SubItems.Add($mast)    # SubItems[2] = Mast.
+    $null           = $script:lvEquipos.Items.Add($item)
     return $item
+}
+
+# Actualiza el estado de Masterizacion de una maquina en el hashtable y en la lista.
+function Set-MastStatus {
+    param([string]$Name, [string]$Status)   # 'OK' | 'Error' | 'Pendiente'
+    $script:MastStatus[$Name] = $Status
+    $item = $script:lvEquipos.Items | Where-Object { $_.Tag -eq $Name } | Select-Object -First 1
+    if (-not $item) { return }
+    # Garantizar que existe SubItems[2]
+    while ($item.SubItems.Count -lt 3) { $null = $item.SubItems.Add('') }
+    $item.SubItems[2].Text = $Status
+    # Color de fila: Mast. tiene prioridad sobre conectividad para dar feedback visual claro
+    $item.ForeColor = switch ($Status) {
+        'OK'       { [System.Drawing.Color]::LightGreen }
+        'Error'    { [System.Drawing.Color]::Tomato }
+        'Pendiente'{ [System.Drawing.Color]::Yellow }
+        default    { [System.Drawing.Color]::Gray }
+    }
 }
 
 function Update-EquipoCard {
