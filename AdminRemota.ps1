@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.14.3 (GUI)
+    Herramienta de administracion remota unificada v2.15.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.14.3
+    2.15.0
 #>
 
 [CmdletBinding()]
@@ -2522,6 +2522,180 @@ function Invoke-PerfilRestore {
     Append-Output "" $script:White
 }
 
+function Invoke-CorporateCleanup {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    Write-Sep
+    Write-Info "Limpieza corporate en '$ComputerName'"
+    Write-Sep
+    Append-Output "" $script:White
+
+    if (-not (Confirm-Action (
+        "Se ejecutara limpieza de caches y temporales corporate en '$ComputerName':`n`n" +
+        "  Windows Temp, Temp de usuarios, Chrome/Edge cache,`n" +
+        "  Teams cache, SoftwareDistribution\Download, Papelera`n`n" +
+        "NO se borran documentos, descargas ni datos del usuario.`n`n" +
+        "¿Continuar?"
+    ) "Limpieza corporate - Confirmar")) {
+        Write-Info "Limpieza cancelada."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    Write-Info "Ejecutando limpieza..."
+    Set-Status "Limpieza corporate '$ComputerName'..." ([System.Drawing.Color]::Yellow)
+    $script:outputBox.Update()
+
+    $cleanResult = Invoke-LocalOrRemote -ComputerName $ComputerName `
+        -OperationTimeoutMs 300000 `
+        -ScriptBlock {
+
+            function Measure-FolderBytes {
+                param([string]$Path)
+                if (-not (Test-Path $Path)) { return [long]0 }
+                $s = (Get-ChildItem $Path -Recurse -Force -ErrorAction SilentlyContinue |
+                          Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+                if ($null -eq $s) { return [long]0 }
+                return [long]$s
+            }
+
+            function Clear-DirContents {
+                param([string]$Path)
+                if (-not (Test-Path $Path)) { return }
+                Get-ChildItem $Path -Force -ErrorAction SilentlyContinue |
+                    ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+
+            $excluir = @('Public', 'Default', 'Default User', 'All Users')
+            $usuarios = @(Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue |
+                              Where-Object { $_.Name -notin $excluir })
+
+            $items = @()
+
+            # ── Windows Temp ──────────────────────────────────────────────
+            $p = 'C:\Windows\Temp'
+            $b = Measure-FolderBytes $p
+            Clear-DirContents $p
+            $freed = $b - (Measure-FolderBytes $p)
+            $items += @{ Label='Windows Temp'; FreedBytes=$freed; Status='OK'; Details='' }
+
+            # ── Temp de usuarios ──────────────────────────────────────────
+            $utFreed = [long]0
+            foreach ($u in $usuarios) {
+                $tp = "$($u.FullName)\AppData\Local\Temp"
+                if (Test-Path $tp) {
+                    $b = Measure-FolderBytes $tp
+                    Clear-DirContents $tp
+                    $utFreed += $b - (Measure-FolderBytes $tp)
+                }
+            }
+            $items += @{ Label='Temp usuarios'; FreedBytes=$utFreed; Status='OK'; Details='' }
+
+            # ── Chrome/Edge cache ─────────────────────────────────────────
+            $brFreed = [long]0
+            $brSubs = @('Cache', 'Code Cache', 'GPUCache')
+            foreach ($u in $usuarios) {
+                foreach ($sub in $brSubs) {
+                    foreach ($brPath in @(
+                        "$($u.FullName)\AppData\Local\Google\Chrome\User Data\Default\$sub",
+                        "$($u.FullName)\AppData\Local\Microsoft\Edge\User Data\Default\$sub"
+                    )) {
+                        if (Test-Path $brPath) {
+                            $b = Measure-FolderBytes $brPath
+                            Clear-DirContents $brPath
+                            $brFreed += $b - (Measure-FolderBytes $brPath)
+                        }
+                    }
+                }
+            }
+            $items += @{ Label='Chrome/Edge cache'; FreedBytes=$brFreed; Status='OK'; Details='' }
+
+            # ── Teams cache ───────────────────────────────────────────────
+            $tmFreed = [long]0
+            $tmSubs = @('Cache', 'GPUCache', 'blob_storage', 'databases', 'IndexedDB')
+            foreach ($u in $usuarios) {
+                $tmRoots = @(
+                    "$($u.FullName)\AppData\Local\Microsoft\Teams\current",
+                    "$($u.FullName)\AppData\Roaming\Microsoft\Teams"
+                )
+                foreach ($tmRoot in $tmRoots) {
+                    foreach ($sub in $tmSubs) {
+                        $tp = "$tmRoot\$sub"
+                        if (Test-Path $tp) {
+                            $b = Measure-FolderBytes $tp
+                            Clear-DirContents $tp
+                            $tmFreed += $b - (Measure-FolderBytes $tp)
+                        }
+                    }
+                }
+            }
+            $items += @{ Label='Teams cache'; FreedBytes=$tmFreed; Status='OK'; Details='' }
+
+            # ── SoftwareDistribution\Download ─────────────────────────────
+            $sdPath = 'C:\Windows\SoftwareDistribution\Download'
+            if (Test-Path $sdPath) {
+                try {
+                    Stop-Service wuauserv -Force -ErrorAction Stop
+                    $b = Measure-FolderBytes $sdPath
+                    Clear-DirContents $sdPath
+                    $sdFreed = $b - (Measure-FolderBytes $sdPath)
+                    Start-Service wuauserv -ErrorAction SilentlyContinue
+                    $items += @{ Label='SoftwareDistrib.'; FreedBytes=$sdFreed; Status='OK'; Details='' }
+                } catch {
+                    Start-Service wuauserv -ErrorAction SilentlyContinue
+                    $items += @{ Label='SoftwareDistrib.'; FreedBytes=[long]0; Status='SKIP'; Details="wuauserv no detenible" }
+                }
+            } else {
+                $items += @{ Label='SoftwareDistrib.'; FreedBytes=[long]0; Status='SKIP'; Details='Ruta no existe' }
+            }
+
+            # ── Papelera ──────────────────────────────────────────────────
+            try {
+                Clear-RecycleBin -Force -ErrorAction Stop
+                $items += @{ Label='Papelera'; FreedBytes=[long]0; Status='OK'; Details='Vaciada' }
+            } catch {
+                $items += @{ Label='Papelera'; FreedBytes=[long]0; Status='SKIP'; Details=$_.Exception.Message }
+            }
+
+            return @{ Items=$items }
+        }
+
+    if (-not $cleanResult) {
+        Write-Fail "Sin respuesta durante la limpieza. Abortando."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    Write-Info "Resultado limpieza corporate:"
+    $totalFreed = [long]0
+    foreach ($r in $cleanResult.Items) {
+        $freed = [long]$r.FreedBytes
+
+        $color = switch ($r.Status) {
+            'OK'    { [System.Drawing.Color]::LightGreen }
+            'SKIP'  { [System.Drawing.Color]::Gray       }
+            default { [System.Drawing.Color]::Tomato     }
+        }
+
+        $freedStr = if ($freed -ge 1GB) { "{0:N2} GB" -f ($freed / 1GB) }
+                    elseif ($freed -ge 1MB) { "{0:N1} MB" -f ($freed / 1MB) }
+                    elseif ($freed -ge 1KB) { "{0:N0} KB" -f ($freed / 1KB) }
+                    else { "$freed B" }
+
+        $det = if ($r.Details) { "  ($($r.Details))" } else { '' }
+        Append-Output ("  [{0,-5}] {1,-20}  {2} liberados{3}" -f `
+            $r.Status, $r.Label, $freedStr, $det) $color
+        $totalFreed += $freed
+    }
+    Append-Output "" $script:White
+
+    $totalStr = if ($totalFreed -ge 1GB) { "{0:N2} GB" -f ($totalFreed / 1GB) }
+                elseif ($totalFreed -ge 1MB) { "{0:N1} MB" -f ($totalFreed / 1MB) }
+                else { "{0:N0} KB" -f ($totalFreed / 1KB) }
+    Write-Ok "Total liberado: $totalStr"
+
+    Write-Sep
+    Append-Output "" $script:White
+}
+
 #endregion
 
 #
@@ -2729,7 +2903,8 @@ $cboMaintenance.Items.AddRange(@(
     "Reparacion sistema (DISM + SFC)",
     "ChkDsk /r",
     "Perfilazo",
-    "Restaurar Perfilazo"
+    "Restaurar Perfilazo",
+    "Limpieza temporales (corporate)"
 ))
 $cboMaintenance.SelectedIndex = 0
 $pActions.Controls.Add($cboMaintenance)
@@ -3248,6 +3423,11 @@ $btnExecute.Add_Click({
                 -StatusMsg "Restaurar Perfilazo en '$target'..." `
                 -Action    { Invoke-PerfilRestore -ComputerName $target }
         }
+        "Limpieza temporales (corporate)" {
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "Limpieza corporate en '$target'..." `
+                -Action    { Invoke-CorporateCleanup -ComputerName $target }
+        }
     }
 })
 
@@ -3313,7 +3493,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.14.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.15.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
