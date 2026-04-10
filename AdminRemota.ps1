@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.15.1 (GUI)
+    Herramienta de administracion remota unificada v2.15.2 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.15.1
+    2.15.2
 #>
 
 [CmdletBinding()]
@@ -2631,11 +2631,21 @@ function Invoke-CorporateCleanup {
             $items += @{ Label='Teams cache'; FreedBytes=$tmFreed; Status='OK'; Details='' }
 
             # ── Papelera ──────────────────────────────────────────────────
-            try {
-                Clear-RecycleBin -Force -ErrorAction Stop
-                $items += @{ Label='Papelera'; FreedBytes=[long]0; Status='OK'; Details='Vaciada' }
-            } catch {
-                $items += @{ Label='Papelera'; FreedBytes=[long]0; Status='SKIP'; Details=$_.Exception.Message }
+            $rbPath = 'C:\$Recycle.Bin'
+            $rbBefore = [long]0
+            if (Test-Path $rbPath) {
+                $rbBefore = (Get-ChildItem $rbPath -Recurse -Force -ErrorAction SilentlyContinue |
+                                 Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+                if ($null -eq $rbBefore) { $rbBefore = [long]0 }
+                Get-ChildItem $rbPath -Force -ErrorAction SilentlyContinue |
+                    ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+                $rbAfter = (Get-ChildItem $rbPath -Recurse -Force -ErrorAction SilentlyContinue |
+                                Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+                if ($null -eq $rbAfter) { $rbAfter = [long]0 }
+                $rbFreed = [Math]::Max([long]0, [long]$rbBefore - [long]$rbAfter)
+                $items += @{ Label='Papelera'; FreedBytes=$rbFreed; Status='OK'; Details='' }
+            } else {
+                $items += @{ Label='Papelera'; FreedBytes=[long]0; Status='SKIP'; Details='C:\$Recycle.Bin no encontrada' }
             }
 
             return @{ Items=$items }
@@ -3475,7 +3485,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.15.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.15.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
