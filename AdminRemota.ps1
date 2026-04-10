@@ -2602,9 +2602,10 @@ $cboMaintenance.SelectedIndex = 0
 $pActions.Controls.Add($cboMaintenance)
 
 $btnExecute   = New-FlatButton "  Ejecutar"    583 1 105 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
-$btnSchedTest = New-FlatButton "  Test Tarea"  695 1 115 28 $btnGray
+$btnSchedTest  = New-FlatButton "  Test Tarea"   695 1 115 28 $btnGray
+$btnUsbStatus  = New-FlatButton "  Estado USB"   815 1 110 28 $btnGray
 
-foreach ($b in @($btnUsb, $btnRestart, $btnExecute, $btnSchedTest)) { $pActions.Controls.Add($b) }
+foreach ($b in @($btnUsb, $btnRestart, $btnExecute, $btnSchedTest, $btnUsbStatus)) { $pActions.Controls.Add($b) }
 
 # ── Fila 6: bloque de progreso + estado ───────────────────────────
 # progressBar + Cancelar en la misma fila para asociarlos visualmente.
@@ -2879,7 +2880,7 @@ function Load-EquipoList {
 # ── Helpers de control de UI ──────────────────────────────────────
 
 # Lista de botones de accion (todos excepto Cancelar y Limpiar)
-$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnExecute,$btnPing,$btnSchedTest)
+$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnExecute,$btnPing,$btnSchedTest,$btnUsbStatus)
 
 function Set-ButtonsEnabled {
     param([bool]$Enabled)
@@ -3041,6 +3042,73 @@ $btnSchedTest.Add_Click({
                     Write-Fail "Scheduled Task NO disponible en '$target'."
                     Write-Fail "  $($res.Details)"
                     Write-Info "  Creada=$($res.Created) | Lanzada=$($res.Launched)"
+                }
+            }
+            Write-Sep
+            Append-Output "" $white
+        }
+})
+
+$btnUsbStatus.Add_Click({
+    $target = Get-ValidComputer
+    if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target `
+        -StatusMsg "Leyendo estado USB de '$target'..." `
+        -UseCancel $false `
+        -Action {
+            Write-Sep
+            Write-Info "Estado limpieza USB en '$target'"
+            Write-Sep
+            $statusPath = 'C:\ProgramData\AdminRemota\usb-clean.status.json'
+            $raw = $null
+            try {
+                $raw = Invoke-LocalOrRemote -ComputerName $target -ArgumentList $statusPath `
+                    -ScriptBlock {
+                        param([string]$p)
+                        if (-not (Test-Path $p)) { return $null }
+                        Get-Content $p -Raw -ErrorAction Stop
+                    }
+            } catch {
+                Write-Fail "Error al leer el fichero remoto: $($_.Exception.Message)"
+                Write-Sep; Append-Output "" $white; return
+            }
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                Write-Warn "No existe $statusPath en '$target'."
+                Write-Info "  Ejecuta primero el borrado USB para generar el archivo de estado."
+                Write-Sep; Append-Output "" $white; return
+            }
+            try { $s = $raw | ConvertFrom-Json } catch {
+                Write-Fail "El fichero no es JSON valido: $($_.Exception.Message)"
+                Write-Sep; Append-Output "" $white; return
+            }
+            # ── Cabecera ──────────────────────────────────────────────
+            Append-Output ("  Equipo       : {0}" -f $s.ComputerName)   $script:White
+            Append-Output ("  Iniciado     : {0}" -f $s.StartedAt)      $script:Silver
+            Append-Output ("  Finalizado   : {0}" -f $s.FinishedAt)     $script:Silver
+            Append-Output ("  Total        : {0}" -f $s.Total)          $script:White
+            Append-Output ("  OK           : {0}" -f $s.Ok)             ([System.Drawing.Color]::LightGreen)
+            if ($s.Warn  -gt 0) {
+                Append-Output ("  Warn/Reboot  : {0}" -f $s.Warn)       ([System.Drawing.Color]::Yellow)
+            }
+            if ($s.Error -gt 0) {
+                Append-Output ("  Error        : {0}" -f $s.Error)      ([System.Drawing.Color]::Tomato)
+            }
+            $rebootStr = if ($s.NeedsReboot)     { "Si" } else { "No" }
+            $rebootIni = if ($s.RebootInitiated) { "Si" } else { "No" }
+            Append-Output ("  NeedsReboot  : {0}" -f $rebootStr)        ([System.Drawing.Color]::Yellow)
+            Append-Output ("  RebootInited : {0}" -f $rebootIni)        ([System.Drawing.Color]::Yellow)
+            Append-Output "" $white
+            # ── Items ─────────────────────────────────────────────────
+            if ($s.Items) {
+                Write-Info "  Detalle por dispositivo:"
+                foreach ($item in $s.Items) {
+                    $c = switch ($item.Status) {
+                        'OK'          { [System.Drawing.Color]::LightGreen }
+                        'WARN_REBOOT' { [System.Drawing.Color]::Yellow     }
+                        default       { [System.Drawing.Color]::Tomato     }
+                    }
+                    Append-Output ("    [{0}]  ExitCode={1}  {2}" -f `
+                        $item.Status, $item.ExitCode, $item.InstanceId) $c
                 }
             }
             Write-Sep
