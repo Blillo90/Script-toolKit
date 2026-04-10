@@ -621,8 +621,15 @@ function Invoke-MasterCheck {
         Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock {
             $f = Get-Item "C:\success.txt" -ErrorAction SilentlyContinue
             if (-not $f) { return @{ Status="ERROR"; Details="No existe C:\success.txt" } }
-            $s = if ($f.LastWriteTime.Date -eq (Get-Date).Date) { "OK" } else { "WARN" }
-            return @{ Status=$s; Details="Fecha: $($f.LastWriteTime)" }
+            # Semana actual: lunes a domingo (semana ISO). DayOfWeek: 0=Dom, 1=Lun ... 6=Sab.
+            $hoy = Get-Date
+            $dia = [int]$hoy.DayOfWeek
+            if ($dia -eq 0) { $dia = 7 }           # Tratar domingo como dia 7 (lunes = dia 1)
+            $inicioSemana = $hoy.Date.AddDays(1 - $dia)
+            $finSemana    = $inicioSemana.AddDays(7)
+            $s = if ($f.LastWriteTime -ge $inicioSemana -and $f.LastWriteTime -lt $finSemana) { "OK" } else { "WARN" }
+            $rango = "$($inicioSemana.ToString('dd/MM')) - $($finSemana.AddDays(-1).ToString('dd/MM/yyyy'))"
+            return @{ Status=$s; Details="Fecha: $($f.LastWriteTime) | Semana: $rango" }
         }
     }
 
@@ -1558,6 +1565,40 @@ function Invoke-RemoteChkdsk {
     Append-Output "" $script:White
 }
 
+# Helper: Lee las ultimas $TailLines lineas de un log remoto y devuelve la ultima linea
+# que coincida con $SuccessPattern (regex case-insensitive). Solo transfiere escalares por
+# WinRM para evitar serializar arrays grandes. Compatible con PS 5.1.
+# Devuelve @{ Found=$bool; Line=$string; Source=$string; Details=$string }
+function Get-RemoteLogSuccessLine {
+    param(
+        [Parameter(Mandatory)][string] $ComputerName,
+        [Parameter(Mandatory)][string] $LogPath,
+        [Parameter(Mandatory)][string] $SuccessPattern,
+        [int]                          $TailLines = 100
+    )
+    try {
+        $r = Invoke-LocalOrRemote -ComputerName $ComputerName `
+            -ArgumentList $LogPath, $SuccessPattern, $TailLines `
+            -ScriptBlock {
+                param([string]$path, [string]$pattern, [int]$tail)
+                if (-not (Test-Path $path -ErrorAction SilentlyContinue)) {
+                    return @{ Found=$false; Line=''; Source=''; Details="Log no encontrado: $path" }
+                }
+                $lines = Get-Content $path -Tail $tail -ErrorAction SilentlyContinue
+                # Select-Object -Last 1: devuelve solo la coincidencia mas reciente
+                $hit = @($lines | Where-Object { $_ -match $pattern }) | Select-Object -Last 1
+                if ($hit) {
+                    return @{ Found=$true; Line=$hit.Trim(); Source=$path; Details='OK' }
+                }
+                return @{ Found=$false; Line=''; Source=$path; Details="Sin coincidencia (ultimas $tail lineas revisadas)" }
+            }
+        if ($null -eq $r) { return @{ Found=$false; Line=''; Source=''; Details='Sin respuesta remota' } }
+        return $r
+    } catch {
+        return @{ Found=$false; Line=''; Source=''; Details="Error al leer log: $($_.Exception.Message)" }
+    }
+}
+
 # ── Reparacion / reinstalacion del cliente SCCM ────────────────────────────────
 # Paso 1: ccmrepair.exe  -> reparacion in-place, no destructiva, sincrona (~1-2 min)
 # Paso 2: ccmsetup.exe   -> reinstalacion completa, asincrona (lanza el instalador y vuelve)
@@ -1642,6 +1683,15 @@ function Invoke-SccmRepair {
                 } elseif ($repairResult.ExitCode -eq 0) {
                     Write-Ok  "[1/2] ccmrepair completado correctamente. ExitCode=0"
                     Set-Status "ccmrepair OK en '$ComputerName'" ([System.Drawing.Color]::LightGreen)
+                    # Validar resultado por log remoto (tail corto; no se vuelca el log completo)
+                    # Log tipico: C:\Windows\CCM\Logs\ccmrepair.log (formato CMTrace)
+                    $logR = Get-RemoteLogSuccessLine -ComputerName $ComputerName `
+                                -LogPath       'C:\Windows\CCM\Logs\ccmrepair.log' `
+                                -SuccessPattern 'repair.*succeed|succeeded|CcmRepair.*complet|Repair.*complet' `
+                                -TailLines     100
+                    if     ($logR.Found)  { Write-Ok   "  Log ccmrepair: $($logR.Line)" }
+                    elseif ($logR.Source) { Write-Warn "  Log ccmrepair: sin linea concluyente ($($logR.Details))." }
+                    else                  { Write-Warn "  Log ccmrepair: $($logR.Details)" }
                 } else {
                     Write-Warn "[1/2] ccmrepair finalizo con ExitCode=$($repairResult.ExitCode)."
                     Write-Info "  ExitCode distinto de 0 puede indicar reinicio pendiente o aviso menor."
@@ -1718,8 +1768,16 @@ function Invoke-SccmRepair {
                 } else {
                     Write-Ok  "[2/2] ccmsetup lanzado correctamente en '$ComputerName'."
                     Write-Info "  La instalacion continua en segundo plano en el equipo remoto."
-                    Write-Info "  Log de progreso: C:\Windows\CCMSetup\Logs\ccmsetup.log"
                     Set-Status "ccmsetup lanzado en '$ComputerName'" ([System.Drawing.Color]::LightGreen)
+                    # Comprobacion inmediata del log (ccmsetup es asincrono; puede no haber linea aun).
+                    # Log tipico: C:\Windows\CCMSetup\Logs\ccmsetup.log (formato CMTrace)
+                    $logS = Get-RemoteLogSuccessLine -ComputerName $ComputerName `
+                                -LogPath        'C:\Windows\CCMSetup\Logs\ccmsetup.log' `
+                                -SuccessPattern 'CcmSetup.*exiting.*return code 0|Installation succeeded|CcmSetup succeeded' `
+                                -TailLines      100
+                    if     ($logS.Found)  { Write-Ok   "  Log ccmsetup: $($logS.Line)" }
+                    elseif ($logS.Source) { Write-Info "  Log ccmsetup: instalacion en curso, sin confirmacion aun. Log: $($logS.Source)" }
+                    else                  { Write-Warn "  Log ccmsetup: $($logS.Details)" }
                 }
             }
         }
