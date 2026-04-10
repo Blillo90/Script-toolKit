@@ -1005,52 +1005,70 @@ function Test-RemoteScheduledTaskCapability {
     try {
         $guid       = [System.Guid]::NewGuid().ToString('N').Substring(0, 8)
         $taskName   = "AdminRemota_Test_$guid"
-        $markerFile = "C:\ProgramData\AdminRemota\sched_test_$guid.tmp"
+        # C:\Windows\Temp es accesible por SYSTEM incluso con politicas restrictivas de ProgramData
+        $markerFile = "C:\Windows\Temp\AdminRemota_test_$guid.tmp"
         $result = Invoke-LocalOrRemote -ComputerName $ComputerName `
             -ArgumentList $taskName, $markerFile -OperationTimeoutMs 60000 `
             -ScriptBlock {
                 param([string]$task, [string]$marker)
-                $dir = 'C:\ProgramData\AdminRemota'
-                if (-not (Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
+                $created    = $false
+                $launched   = $false
+                $found      = $false
+                $lastResult = 'N/A'
                 try {
-                    # Crear tarea temporal sin trigger (manual run)
-                    $action   = New-ScheduledTaskAction -Execute 'cmd.exe' `
-                                    -Argument ("/c echo test > `"$marker`"")
-                    $settings = New-ScheduledTaskSettingsSet `
-                                    -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+                    # Accion minima: cmd.exe simple (sin PowerShell), maxima compatibilidad corporativa
+                    $action    = New-ScheduledTaskAction -Execute 'cmd.exe' `
+                                     -Argument "/c echo OK > `"$marker`""
+                    # SYSTEM: no requiere contrasena, independiente del usuario activo, maxima robustez
+                    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+                    $settings  = New-ScheduledTaskSettingsSet `
+                                     -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
                     Register-ScheduledTask -TaskName $task -Action $action `
-                        -Settings $settings -RunLevel Highest -Force `
-                        -ErrorAction Stop | Out-Null
+                        -Principal $principal -Settings $settings `
+                        -Force -ErrorAction Stop | Out-Null
+                    $created = $true
+
                     Start-ScheduledTask -TaskName $task -ErrorAction Stop
+                    $launched = $true
+
+                    # cmd.exe /c echo es instantaneo; 5s es mas que suficiente para cualquier entorno
                     Start-Sleep -Seconds 5
                     $found = Test-Path $marker
-                    Unregister-ScheduledTask -TaskName $task -Confirm:$false `
-                        -ErrorAction SilentlyContinue
-                    if (Test-Path $marker) {
-                        Remove-Item $marker -Force -ErrorAction SilentlyContinue
-                    }
+
+                    # LastRunResult real via Get-ScheduledTaskInfo (disponible desde Win8.1 / PS4+)
+                    try {
+                        $info       = Get-ScheduledTaskInfo -TaskName $task -ErrorAction Stop
+                        $lastResult = '0x{0:X}' -f [uint32]$info.LastRunResult
+                    } catch { $lastResult = 'N/A' }
+
+                    Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+                    if (Test-Path $marker) { Remove-Item $marker -Force -ErrorAction SilentlyContinue }
+
                     if ($found) {
-                        return @{ Status='OK';
-                                  Details='Tarea programada creada y ejecutada correctamente';
-                                  Method='ScheduledTask' }
+                        return @{ Status='OK'; Method='ScheduledTask'; Created=$true; Launched=$true;
+                                  MarkerFound=$true; LastResult=$lastResult;
+                                  Details="Tarea funcional. LastResult=$lastResult" }
                     }
-                    return @{ Status='WARN';
-                              Details='Tarea creada y lanzada, pero el marcador no se genero (politica o UAC?)';
-                              Method='ScheduledTask' }
+                    return @{ Status='WARN'; Method='ScheduledTask'; Created=$true; Launched=$true;
+                              MarkerFound=$false; LastResult=$lastResult;
+                              Details="Tarea lanzada pero sin marcador. LastResult=$lastResult. Posible restriccion de contexto o politica." }
                 } catch {
-                    Unregister-ScheduledTask -TaskName $task -Confirm:$false `
-                        -ErrorAction SilentlyContinue
-                    return @{ Status='ERROR';
-                              Details="No se pudo crear/ejecutar la tarea: $($_.Exception.Message)";
-                              Method='ScheduledTask' }
+                    Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+                    if (Test-Path $marker) { Remove-Item $marker -Force -ErrorAction SilentlyContinue }
+                    $phase = if (-not $created) { 'crear' } elseif (-not $launched) { 'lanzar' } else { 'consultar' }
+                    return @{ Status='ERROR'; Method='ScheduledTask'; Created=$created; Launched=$launched;
+                              MarkerFound=$false; LastResult='N/A';
+                              Details="Error al $phase la tarea: $($_.Exception.Message)" }
                 }
             }
         if ($null -eq $result) {
-            return @{ Status='ERROR'; Details='Sin respuesta remota'; Method='ScheduledTask' }
+            return @{ Status='ERROR'; Method='ScheduledTask'; Created=$false; Launched=$false;
+                      MarkerFound=$false; LastResult='N/A'; Details='Sin respuesta remota' }
         }
         return $result
     } catch {
-        return @{ Status='ERROR'; Details="Error de conexion: $($_.Exception.Message)"; Method='ScheduledTask' }
+        return @{ Status='ERROR'; Method='ScheduledTask'; Created=$false; Launched=$false;
+                  MarkerFound=$false; LastResult='N/A'; Details="Error de conexion: $($_.Exception.Message)" }
     }
 }
 
@@ -1312,15 +1330,32 @@ function Invoke-UsbDriverClean {
         return
     }
 
-    # ── Fase D: Lanzar limpieza desacoplada (no depende de mantener la sesion WinRM) ──
+    # ── Fase D: Seleccion de metodo + lanzamiento desacoplado ────────────────────────
+    # Scheduled Task se considera valida SOLO si el marcador se confirma (ejecucion real).
+    # Sin confirmacion real → fallback automatico a Win32_Process.Create via CIM.
     Write-Sep
-    Write-Info "Lanzando limpieza USB desacoplada en '$ComputerName'..."
-    Write-Info "  Modo: $modoTexto  |  $total driver(s) en cola."
-    Write-Info "  Metodo preferido: Scheduled Task (fallback: Win32_Process via CIM)."
+    Write-Info "Seleccionando metodo de ejecucion desacoplada para '$ComputerName'..."
     Append-Output "" $script:White
 
     $instanceIds = @($driverList | ForEach-Object { [string]$_.InstanceId })
-    $launch = Start-DetachedUsbCleanup -ComputerName $ComputerName -InstanceIds $instanceIds
+
+    Write-Info "  Verificando Scheduled Task..."
+    $schedCheck = Test-RemoteScheduledTaskCapability -ComputerName $ComputerName
+
+    $preferredMethod = if ($schedCheck -and $schedCheck.MarkerFound) {
+        Write-Ok  "  Scheduled Task confirmada (LastResult=$($schedCheck.LastResult)). Metodo: ScheduledTask."
+        'Auto'            # Auto = intenta ST primero en Start-DetachedUsbCleanup
+    } else {
+        if ($schedCheck -and $schedCheck.Created) {
+            Write-Warn "  Scheduled Task sin confirmacion real (LastResult=$($schedCheck.LastResult)). Fallback a proceso desacoplado."
+        } else {
+            Write-Warn "  Scheduled Task no disponible. Se usara proceso desacoplado (Win32_Process via CIM)."
+        }
+        'DetachedProcess' # Omite el bloque ST en Start-DetachedUsbCleanup
+    }
+    Append-Output "" $script:White
+
+    $launch = Start-DetachedUsbCleanup -ComputerName $ComputerName -InstanceIds $instanceIds -PreferredMethod $preferredMethod
 
     if ($launch.Status -ne 'OK') {
         Write-Fail "No se pudo lanzar la limpieza USB desacoplada en '$ComputerName'."
@@ -2980,16 +3015,18 @@ $btnSchedTest.Add_Click({
             $res = Test-RemoteScheduledTaskCapability -ComputerName $target
             switch ($res.Status) {
                 'OK'    {
-                    Write-Ok   "Scheduled Task funcional en '$target'."
+                    Write-Ok   "Scheduled Task funcional en '$target'. LastResult=$($res.LastResult)"
                     Write-Ok   "  $($res.Details)"
                 }
                 'WARN'  {
-                    Write-Warn "Scheduled Task creada pero sin confirmacion de ejecucion en '$target'."
+                    Write-Warn "Scheduled Task sin confirmacion completa en '$target'."
                     Write-Warn "  $($res.Details)"
+                    Write-Info "  Creada=$($res.Created) | Lanzada=$($res.Launched) | Marcador=$($res.MarkerFound)"
                 }
                 default {
                     Write-Fail "Scheduled Task NO disponible en '$target'."
                     Write-Fail "  $($res.Details)"
+                    Write-Info "  Creada=$($res.Created) | Lanzada=$($res.Launched)"
                 }
             }
             Write-Sep
