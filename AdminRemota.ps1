@@ -995,6 +995,166 @@ function Invoke-SystemInfo {
 # OPCION 3 - BORRAR DRIVERS USB
 #═══════════════════════════════════════════════════════════════════
 
+# ── Helpers de limpieza USB desacoplada ──────────────────────────────────────────
+
+# Verifica si las tareas programadas son funcionales en el equipo remoto.
+# Crea una tarea temporal, la ejecuta, verifica el marcador y limpia todo.
+# Devuelve @{ Status="OK"|"WARN"|"ERROR"; Details; Method="ScheduledTask" }
+function Test-RemoteScheduledTaskCapability {
+    param([Parameter(Mandatory)][string]$ComputerName)
+    try {
+        $guid       = [System.Guid]::NewGuid().ToString('N').Substring(0, 8)
+        $taskName   = "AdminRemota_Test_$guid"
+        $markerFile = "C:\ProgramData\AdminRemota\sched_test_$guid.tmp"
+        $result = Invoke-LocalOrRemote -ComputerName $ComputerName `
+            -ArgumentList $taskName, $markerFile -OperationTimeoutMs 60000 `
+            -ScriptBlock {
+                param([string]$task, [string]$marker)
+                $dir = 'C:\ProgramData\AdminRemota'
+                if (-not (Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
+                try {
+                    # Crear tarea temporal sin trigger (manual run)
+                    $action   = New-ScheduledTaskAction -Execute 'cmd.exe' `
+                                    -Argument ("/c echo test > `"$marker`"")
+                    $settings = New-ScheduledTaskSettingsSet `
+                                    -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+                    Register-ScheduledTask -TaskName $task -Action $action `
+                        -Settings $settings -RunLevel Highest -Force `
+                        -ErrorAction Stop | Out-Null
+                    Start-ScheduledTask -TaskName $task -ErrorAction Stop
+                    Start-Sleep -Seconds 5
+                    $found = Test-Path $marker
+                    Unregister-ScheduledTask -TaskName $task -Confirm:$false `
+                        -ErrorAction SilentlyContinue
+                    if (Test-Path $marker) {
+                        Remove-Item $marker -Force -ErrorAction SilentlyContinue
+                    }
+                    if ($found) {
+                        return @{ Status='OK';
+                                  Details='Tarea programada creada y ejecutada correctamente';
+                                  Method='ScheduledTask' }
+                    }
+                    return @{ Status='WARN';
+                              Details='Tarea creada y lanzada, pero el marcador no se genero (politica o UAC?)';
+                              Method='ScheduledTask' }
+                } catch {
+                    Unregister-ScheduledTask -TaskName $task -Confirm:$false `
+                        -ErrorAction SilentlyContinue
+                    return @{ Status='ERROR';
+                              Details="No se pudo crear/ejecutar la tarea: $($_.Exception.Message)";
+                              Method='ScheduledTask' }
+                }
+            }
+        if ($null -eq $result) {
+            return @{ Status='ERROR'; Details='Sin respuesta remota'; Method='ScheduledTask' }
+        }
+        return $result
+    } catch {
+        return @{ Status='ERROR'; Details="Error de conexion: $($_.Exception.Message)"; Method='ScheduledTask' }
+    }
+}
+
+# Lanza la limpieza USB de forma DESACOPLADA de la sesion WinRM.
+# Metodo 1: Scheduled Task de un solo uso (survives WinRM, preferido).
+# Metodo 2: Win32_Process.Create via CIM (hijo de WMI, fallback).
+# El payload se autoeliminada al terminar. El resultado queda en $statusPath.
+# Devuelve @{ Status="OK"|"ERROR"; Method; StatusPath }
+function Start-DetachedUsbCleanup {
+    param(
+        [Parameter(Mandatory)][string]   $ComputerName,
+        [Parameter(Mandatory)][string[]] $InstanceIds,
+        [string]                         $PreferredMethod = 'Auto'   # Auto | ScheduledTask | DetachedProcess
+    )
+    $statusDir  = 'C:\ProgramData\AdminRemota'
+    $statusPath = "$statusDir\usb-clean.status.json"
+    $guid       = [System.Guid]::NewGuid().ToString('N').Substring(0, 8)
+    $taskName   = "AdminRemota_UsbClean_$guid"
+    $scriptPath = "$statusDir\usb-clean-$guid.ps1"
+    # Serializar IDs a JSON compacto para embeber en el payload sin problemas de quoting
+    $idsJson    = ($InstanceIds | ConvertTo-Json -Compress)
+
+    try {
+        $r = Invoke-LocalOrRemote -ComputerName $ComputerName `
+            -ArgumentList $statusDir, $scriptPath, $idsJson, $taskName, $statusPath, $PreferredMethod `
+            -ScriptBlock {
+                param([string]$dir, [string]$sPath, [string]$idsJson,
+                      [string]$task, [string]$statPath, [string]$method)
+
+                if (-not (Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
+
+                # Construir payload: corre localmente en el equipo remoto, independiente de WinRM.
+                # $idsJson se expande aqui (en el scriptblock remoto) antes de escribir el fichero.
+                # El script resultante tiene los IDs codificados en JSON y se autoeliminada al terminar.
+                $payload = @"
+`$ids = '$idsJson' | ConvertFrom-Json
+`$startedAt = (Get-Date).ToString('o')
+`$items = [System.Collections.Generic.List[hashtable]]::new()
+`$needsReboot = `$false
+foreach (`$id in `$ids) {
+    `$out = (pnputil /remove-device "`$id" 2>&1) -join ' '
+    `$ec  = `$LASTEXITCODE
+    if (`$ec -eq 3010) { `$needsReboot = `$true }
+    `$st  = switch (`$ec) { 0 { 'OK' } 3010 { 'WARN_REBOOT' } default { 'ERROR' } }
+    `$items.Add(@{ InstanceId = `$id; ExitCode = `$ec; Status = `$st })
+}
+`$ok   = @(`$items | Where-Object { `$_.Status -eq 'OK' }).Count
+`$warn = @(`$items | Where-Object { `$_.Status -eq 'WARN_REBOOT' }).Count
+`$err  = @(`$items | Where-Object { `$_.Status -ne 'OK' -and `$_.Status -ne 'WARN_REBOOT' }).Count
+@{ ComputerName = `$env:COMPUTERNAME
+   StartedAt    = `$startedAt
+   FinishedAt   = (Get-Date).ToString('o')
+   Total        = `$ids.Count
+   Ok           = `$ok
+   Warn         = `$warn
+   Error        = `$err
+   NeedsReboot  = `$needsReboot
+   Items        = @(`$items)
+} | ConvertTo-Json -Depth 3 | Set-Content '$statPath' -Encoding UTF8
+Remove-Item '$sPath' -Force -ErrorAction SilentlyContinue
+"@
+                [System.IO.File]::WriteAllText($sPath, $payload, [System.Text.Encoding]::UTF8)
+
+                # ── Metodo 1: Scheduled Task (no depende de WinRM) ────────────────
+                if ($method -ne 'DetachedProcess') {
+                    try {
+                        $action   = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                            -Argument "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$sPath`""
+                        $settings = New-ScheduledTaskSettingsSet `
+                            -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -Hidden $true
+                        Register-ScheduledTask -TaskName $task -Action $action `
+                            -Settings $settings -RunLevel Highest -Force `
+                            -ErrorAction Stop | Out-Null
+                        Start-ScheduledTask -TaskName $task -ErrorAction Stop
+                        # Breve espera para que la tarea arranque, luego eliminamos su registro
+                        Start-Sleep -Seconds 1
+                        Unregister-ScheduledTask -TaskName $task -Confirm:$false `
+                            -ErrorAction SilentlyContinue
+                        return @{ Status='OK'; Method='ScheduledTask'; StatusPath=$statPath }
+                    } catch {
+                        # ScheduledTask no disponible: intentar fallback
+                    }
+                }
+
+                # ── Metodo 2: Win32_Process.Create (hijo de WMI, survives WinRM) ──
+                try {
+                    $cmd = "powershell.exe -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$sPath`""
+                    $wmi = Invoke-CimMethod -ClassName Win32_Process -MethodName Create `
+                               -Arguments @{ CommandLine = $cmd } -ErrorAction Stop
+                    if ($wmi.ReturnValue -eq 0) {
+                        return @{ Status='OK'; Method='DetachedProcess'; StatusPath=$statPath }
+                    }
+                    return @{ Status='ERROR'; Method='DetachedProcess'; StatusPath=$statPath }
+                } catch {
+                    return @{ Status='ERROR'; Method='None'; StatusPath=$statPath }
+                }
+            }
+        if ($null -eq $r) { return @{ Status='ERROR'; Method='None'; StatusPath=$statusPath } }
+        return $r
+    } catch {
+        return @{ Status='ERROR'; Method='None'; StatusPath=$statusPath }
+    }
+}
+
 function Invoke-UsbDriverClean {
     param([Parameter(Mandatory)][string]$ComputerName)
 
@@ -1152,130 +1312,44 @@ function Invoke-UsbDriverClean {
         return
     }
 
-    # ── Fase D: Borrado con progreso visible y timeout por driver ────
+    # ── Fase D: Lanzar limpieza desacoplada (no depende de mantener la sesion WinRM) ──
     Write-Sep
-    Write-Info "Iniciando borrado de $total driver(s) [$modoTexto]..."
+    Write-Info "Lanzando limpieza USB desacoplada en '$ComputerName'..."
+    Write-Info "  Modo: $modoTexto  |  $total driver(s) en cola."
+    Write-Info "  Metodo preferido: Scheduled Task (fallback: Win32_Process via CIM)."
     Append-Output "" $script:White
 
-    # Tiempo maximo de espera por driver antes de declarar TIMEOUT y continuar.
-    # pnputil sobre un driver del stack USB puede quedar esperando liberaciones
-    # que nunca llegan; sin timeout el script se bloquea indefinidamente.
-    $timeoutSec = 15
+    $instanceIds = @($driverList | ForEach-Object { [string]$_.InstanceId })
+    $launch = Start-DetachedUsbCleanup -ComputerName $ComputerName -InstanceIds $instanceIds
 
-    $okCount    = 0
-    $warnCount  = 0
-    $errorCount = 0
-    $results    = [System.Collections.Generic.List[object]]::new()
-    $idx        = 0
-
-    foreach ($d in $driverList) {
-        $idx++
-        Write-Info ("  [{0}/{1}] Procesando: {2}" -f $idx, $total, $d.FriendlyName)
-        # Fuerza repintado sincrono antes del Start-Job para que el usuario vea
-        # el mensaje "Procesando" antes de que el UI thread entre en el bucle de espera.
-        $script:outputBox.Update()
-
-        # Lanzar el borrado en un job independiente.
-        # Invoke-Command directo no tiene timeout de ejecucion: si pnputil espera la
-        # liberacion de un dispositivo bloqueado del stack USB, congela el hilo UI
-        # indefinidamente. Start-Job desacopla la ejecucion; Stop-Job la cancela.
-        $job = Start-Job -ArgumentList $ComputerName, ([string]$d.InstanceId) -ScriptBlock {
-            param($computer, $instanceId)
-            try {
-                $res = Invoke-Command -ComputerName $computer -ArgumentList $instanceId `
-                    -ErrorAction SilentlyContinue -ScriptBlock {
-                        param($id)
-                        $out = pnputil /remove-device "$id" 2>&1
-                        return @{ Output = ($out -join ' ').Trim(); ExitCode = $LASTEXITCODE }
-                    }
-                return $res
-            } catch {
-                return @{ Output = $_.Exception.Message; ExitCode = -1 }
-            }
-        }
-
-        # Esperar con deadline manteniendo la GUI viva mediante DoEvents.
-        # Intervalo de 200ms: suficientemente corto para no congelar la ventana.
-        $deadline = (Get-Date).AddSeconds($timeoutSec)
-        while ($job.State -eq 'Running' -and (Get-Date) -lt $deadline) {
-            Start-Sleep -Milliseconds 200
-            [System.Windows.Forms.Application]::DoEvents()
-        }
-
-        if ($job.State -eq 'Running') {
-            # El job sigue activo al superar el deadline: cancelar y continuar.
-            Stop-Job  $job
-            Remove-Job $job -Force
-            Write-Fail ("  [{0}/{1}] TIMEOUT -> {2}  (>{3}s, driver en uso o stack USB bloqueado)" -f `
-                $idx, $total, $d.FriendlyName, $timeoutSec)
-            $errorCount++
-            $results.Add([PSCustomObject]@{ Status="ERROR"; Name=$d.FriendlyName; Detail="TIMEOUT (>${timeoutSec}s)" })
-            continue
-        }
-
-        # Job completado: recoger resultado y limpiar
-        $rem = Receive-Job $job
-        Remove-Job $job -Force
-
-        if ($null -eq $rem) {
-            Write-Fail ("  [{0}/{1}] ERROR  -> {2}  (sin respuesta remota)" -f $idx, $total, $d.FriendlyName)
-            $errorCount++
-            $results.Add([PSCustomObject]@{ Status="ERROR"; Name=$d.FriendlyName; Detail="Sin respuesta remota" })
-            continue
-        }
-
-        switch ($rem.ExitCode) {
-            0 {
-                Write-Ok   ("  [{0}/{1}] OK     -> {2}" -f $idx, $total, $d.FriendlyName)
-                $okCount++
-                $results.Add([PSCustomObject]@{ Status="OK";   Name=$d.FriendlyName; Detail="OK" })
-            }
-            3010 {
-                # pnputil: exito pero se requiere reinicio para completar
-                Write-Warn ("  [{0}/{1}] WARN   -> {2}  (requiere reinicio)" -f $idx, $total, $d.FriendlyName)
-                $warnCount++
-                $results.Add([PSCustomObject]@{ Status="WARN"; Name=$d.FriendlyName; Detail="Eliminado, pendiente reinicio" })
-            }
-            default {
-                Write-Fail ("  [{0}/{1}] ERROR  -> {2}  | ExitCode={3} | {4}" -f `
-                    $idx, $total, $d.FriendlyName, $rem.ExitCode, $rem.Output)
-                $errorCount++
-                $results.Add([PSCustomObject]@{ Status="ERROR"; Name=$d.FriendlyName; Detail="ExitCode=$($rem.ExitCode)" })
-            }
-        }
-    }
-
-    # ── Fase E: Resumen final ────────────────────────────────────────
-    Append-Output "" $script:White
-    Write-Sep
-    Write-Info "RESUMEN DE BORRADO USB"
-    Write-Sep
-    Append-Output ("  Modo               : {0}" -f $modoTexto)    ([System.Drawing.Color]::Cyan)
-    Append-Output ("  Total candidatos   : {0}" -f $total)        $script:White
-    Append-Output ("  Eliminados OK      : {0}" -f $okCount)      ([System.Drawing.Color]::LightGreen)
-    if ($warnCount -gt 0) {
-        Append-Output ("  Requieren reinicio : {0}" -f $warnCount) ([System.Drawing.Color]::Yellow)
-    }
-    if ($errorCount -gt 0) {
-        Append-Output ("  Fallidos           : {0}" -f $errorCount) ([System.Drawing.Color]::Tomato)
+    if ($launch.Status -ne 'OK') {
+        Write-Fail "No se pudo lanzar la limpieza USB desacoplada en '$ComputerName'."
+        Write-Info "  El equipo puede no permitir tareas programadas ni creacion de procesos via WMI/CIM."
+        Write-Sep
         Append-Output "" $script:White
-        Write-Fail "  Drivers con error:"
-        foreach ($r in ($results | Where-Object { $_.Status -eq "ERROR" })) {
-            Append-Output ("    -> {0}  ({1})" -f $r.Name, $r.Detail) ([System.Drawing.Color]::Tomato)
-        }
+        return
     }
+
+    # ── Fase E: Confirmacion de lanzamiento ──────────────────────────────────────
+    Write-Ok  "Limpieza USB iniciada correctamente en '$ComputerName'."
+    Write-Ok  "  Metodo utilizado: $($launch.Method)"
+    Write-Info "  $total driver(s) en proceso de borrado (segundo plano)."
+    Write-Info "  La conectividad puede perderse temporalmente al eliminar drivers USB."
+    Write-Info "  Resultado en: $($launch.StatusPath)"
     Write-Sep
     Append-Output "" $script:White
 
-    # Ofrecer reinicio si hubo al menos un borrado exitoso (OK o pendiente)
-    $deleted = $okCount + $warnCount
-    if ($deleted -gt 0) {
-        $reinicioMsg = "Se procesaron correctamente $deleted de $total driver(s)."
-        if ($warnCount -gt 0) { $reinicioMsg += "`n$warnCount requieren reinicio para completarse." }
-        $reinicioMsg += "`n`nReiniciar '$ComputerName' ahora?"
-        if (Confirm-Action $reinicioMsg) {
-            Restart-Computer -ComputerName $ComputerName -Force
-            Write-Ok "Reiniciando '$ComputerName'..."
+    # Ofrecer reinicio: el borrado es asincrono, pero muchos drivers requieren reboot
+    if (Confirm-Action (
+        "La limpieza USB se ha iniciado en segundo plano en '$ComputerName'.`n`n" +
+        "La mayoria de drivers USB requieren reinicio para completar su eliminacion.`n`n" +
+        "Reiniciar '$ComputerName' ahora?"
+    )) {
+        try {
+            Restart-Computer -ComputerName $ComputerName -Force -ErrorAction Stop
+            Write-Ok "Orden de reinicio enviada a '$ComputerName'."
+        } catch {
+            Write-Fail "No se pudo reiniciar '$ComputerName': $_"
         }
     }
 }
@@ -2478,9 +2552,10 @@ $cboMaintenance.Items.AddRange(@(
 $cboMaintenance.SelectedIndex = 0
 $pActions.Controls.Add($cboMaintenance)
 
-$btnExecute = New-FlatButton "  Ejecutar" 583 1 105 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
+$btnExecute   = New-FlatButton "  Ejecutar"    583 1 105 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
+$btnSchedTest = New-FlatButton "  Test Tarea"  695 1 115 28 $btnGray
 
-foreach ($b in @($btnUsb, $btnRestart, $btnExecute)) { $pActions.Controls.Add($b) }
+foreach ($b in @($btnUsb, $btnRestart, $btnExecute, $btnSchedTest)) { $pActions.Controls.Add($b) }
 
 # ── Fila 6: bloque de progreso + estado ───────────────────────────
 # progressBar + Cancelar en la misma fila para asociarlos visualmente.
@@ -2755,7 +2830,7 @@ function Load-EquipoList {
 # ── Helpers de control de UI ──────────────────────────────────────
 
 # Lista de botones de accion (todos excepto Cancelar y Limpiar)
-$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnExecute,$btnPing)
+$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnUsb,$btnRestart,$btnExecute,$btnPing,$btnSchedTest)
 
 function Set-ButtonsEnabled {
     param([bool]$Enabled)
@@ -2889,6 +2964,37 @@ $btnUsb.Add_Click({
     Invoke-ActionButton -ComputerName $target `
         -StatusMsg "Obteniendo drivers USB de '$target'..." `
         -Action    { Invoke-UsbDriverClean -ComputerName $target }
+})
+
+$btnSchedTest.Add_Click({
+    $target = Get-ValidComputer
+    if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target `
+        -StatusMsg "Probando Scheduled Tasks en '$target'..." `
+        -UseCancel $false `
+        -Action {
+            Write-Sep
+            Write-Info "Test de Scheduled Task en '$target'"
+            Write-Sep
+            Set-Status "Probando tareas programadas en '$target'..." ([System.Drawing.Color]::Yellow)
+            $res = Test-RemoteScheduledTaskCapability -ComputerName $target
+            switch ($res.Status) {
+                'OK'    {
+                    Write-Ok   "Scheduled Task funcional en '$target'."
+                    Write-Ok   "  $($res.Details)"
+                }
+                'WARN'  {
+                    Write-Warn "Scheduled Task creada pero sin confirmacion de ejecucion en '$target'."
+                    Write-Warn "  $($res.Details)"
+                }
+                default {
+                    Write-Fail "Scheduled Task NO disponible en '$target'."
+                    Write-Fail "  $($res.Details)"
+                }
+            }
+            Write-Sep
+            Append-Output "" $white
+        }
 })
 
 $btnRestart.Add_Click({
