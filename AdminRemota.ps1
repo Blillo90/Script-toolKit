@@ -1081,7 +1081,8 @@ function Start-DetachedUsbCleanup {
     param(
         [Parameter(Mandatory)][string]   $ComputerName,
         [Parameter(Mandatory)][string[]] $InstanceIds,
-        [string]                         $PreferredMethod = 'Auto'   # Auto | ScheduledTask | DetachedProcess
+        [string]                         $PreferredMethod = 'Auto',  # Auto | ScheduledTask | DetachedProcess
+        [bool]                           $AutoReboot      = $false   # Solo modo agresivo: shutdown /r al final del payload
     )
     $statusDir  = 'C:\ProgramData\AdminRemota'
     $statusPath = "$statusDir\usb-clean.status.json"
@@ -1093,16 +1094,21 @@ function Start-DetachedUsbCleanup {
 
     try {
         $r = Invoke-LocalOrRemote -ComputerName $ComputerName `
-            -ArgumentList $statusDir, $scriptPath, $idsJson, $taskName, $statusPath, $PreferredMethod `
+            -ArgumentList $statusDir, $scriptPath, $idsJson, $taskName, $statusPath, $PreferredMethod, $AutoReboot `
             -ScriptBlock {
                 param([string]$dir, [string]$sPath, [string]$idsJson,
-                      [string]$task, [string]$statPath, [string]$method)
+                      [string]$task, [string]$statPath, [string]$method, [bool]$reboot)
 
                 if (-not (Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
 
                 # Construir payload: corre localmente en el equipo remoto, independiente de WinRM.
                 # $idsJson se expande aqui (en el scriptblock remoto) antes de escribir el fichero.
                 # El script resultante tiene los IDs codificados en JSON y se autoeliminada al terminar.
+                # $rebootValue y $rebootCmd se expanden al construir el payload (NO llevan backtick):
+                #   $rebootValue → '$true'/'$false' literal para el campo JSON RebootInitiated
+                #   $rebootCmd   → linea shutdown.exe o cadena vacia segun modo
+                $rebootValue = if ($reboot) { '$true'  } else { '$false' }
+                $rebootCmd   = if ($reboot) { "Start-Sleep -Seconds 3`nshutdown.exe /r /t 5 /f" } else { '' }
                 $payload = @"
 `$ids = '$idsJson' | ConvertFrom-Json
 `$startedAt = (Get-Date).ToString('o')
@@ -1118,17 +1124,19 @@ foreach (`$id in `$ids) {
 `$ok   = @(`$items | Where-Object { `$_.Status -eq 'OK' }).Count
 `$warn = @(`$items | Where-Object { `$_.Status -eq 'WARN_REBOOT' }).Count
 `$err  = @(`$items | Where-Object { `$_.Status -ne 'OK' -and `$_.Status -ne 'WARN_REBOOT' }).Count
-@{ ComputerName = `$env:COMPUTERNAME
-   StartedAt    = `$startedAt
-   FinishedAt   = (Get-Date).ToString('o')
-   Total        = `$ids.Count
-   Ok           = `$ok
-   Warn         = `$warn
-   Error        = `$err
-   NeedsReboot  = `$needsReboot
-   Items        = @(`$items)
+@{ ComputerName    = `$env:COMPUTERNAME
+   StartedAt       = `$startedAt
+   FinishedAt      = (Get-Date).ToString('o')
+   Total           = `$ids.Count
+   Ok              = `$ok
+   Warn            = `$warn
+   Error           = `$err
+   NeedsReboot     = `$needsReboot
+   RebootInitiated = $rebootValue
+   Items           = @(`$items)
 } | ConvertTo-Json -Depth 3 | Set-Content '$statPath' -Encoding UTF8
 Remove-Item '$sPath' -Force -ErrorAction SilentlyContinue
+$rebootCmd
 "@
                 [System.IO.File]::WriteAllText($sPath, $payload, [System.Text.Encoding]::UTF8)
 
@@ -1355,7 +1363,10 @@ function Invoke-UsbDriverClean {
     }
     Append-Output "" $script:White
 
-    $launch = Start-DetachedUsbCleanup -ComputerName $ComputerName -InstanceIds $instanceIds -PreferredMethod $preferredMethod
+    # Modo agresivo (no fantasmas): el payload ejecutara shutdown /r /t 5 /f al terminar
+    $autoReboot = -not $soloFantasmas
+    $launch = Start-DetachedUsbCleanup -ComputerName $ComputerName -InstanceIds $instanceIds `
+                  -PreferredMethod $preferredMethod -AutoReboot $autoReboot
 
     if ($launch.Status -ne 'OK') {
         Write-Fail "No se pudo lanzar la limpieza USB desacoplada en '$ComputerName'."
@@ -1371,15 +1382,18 @@ function Invoke-UsbDriverClean {
     Write-Info "  $total driver(s) en proceso de borrado (segundo plano)."
     Write-Info "  La conectividad puede perderse temporalmente al eliminar drivers USB."
     Write-Info "  Resultado en: $($launch.StatusPath)"
+    if ($autoReboot) {
+        # Modo agresivo: el payload lanza shutdown /r /t 5 /f al finalizar el borrado
+        Write-Warn "  El equipo '$ComputerName' se reiniciara automaticamente al finalizar la limpieza USB."
+    }
     Write-Sep
     Append-Output "" $script:White
 
-    # Ofrecer reinicio: el borrado es asincrono, pero muchos drivers requieren reboot
-    if (Confirm-Action (
-        "La limpieza USB se ha iniciado en segundo plano en '$ComputerName'.`n`n" +
-        "La mayoria de drivers USB requieren reinicio para completar su eliminacion.`n`n" +
-        "Reiniciar '$ComputerName' ahora?"
-    )) {
+    # En modo fantasma no hay reinicio automatico: ofrecer al usuario si lo desea
+    if ($soloFantasmas -and (Confirm-Action (
+        "La limpieza USB (fantasmas) se ha iniciado en segundo plano en '$ComputerName'.`n`n" +
+        "¿Deseas reiniciar el equipo ahora?"
+    ))) {
         try {
             Restart-Computer -ComputerName $ComputerName -Force -ErrorAction Stop
             Write-Ok "Orden de reinicio enviada a '$ComputerName'."
