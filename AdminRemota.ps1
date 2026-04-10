@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.14.1 (GUI)
+    Herramienta de administracion remota unificada v2.14.2 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.14.1
+    2.14.2
 #>
 
 [CmdletBinding()]
@@ -2292,6 +2292,200 @@ function Invoke-Perfilazo {
     Append-Output "" $script:White
 }
 
+function Invoke-PerfilRestore {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    Write-Sep
+    Write-Info "Restaurar Perfilazo en '$ComputerName'"
+    Write-Sep
+    Append-Output "" $script:White
+
+    # ── Paso 1: Obtener y seleccionar perfil destino ──────────────────
+    Write-Info "Obteniendo perfiles disponibles en '$ComputerName'..."
+    $perfiles = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+        $excluir = @('Public', 'Default', 'Default User', 'All Users')
+        Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue |
+            Where-Object {
+                (-not $_.Special) -and
+                ($_.LocalPath -like 'C:\Users\*') -and
+                ((Split-Path $_.LocalPath -Leaf) -notin $excluir)
+            } |
+            Sort-Object LastUseTime -Descending |
+            ForEach-Object {
+                $lastUse = if ($_.LastUseTime) { $_.LastUseTime.ToString('yyyy-MM-dd HH:mm') } else { 'N/A' }
+                @{ Name=(Split-Path $_.LocalPath -Leaf); LocalPath=$_.LocalPath; Loaded=$_.Loaded; LastUse=$lastUse }
+            }
+    }
+
+    if (-not $perfiles) {
+        Write-Fail "No hay perfiles disponibles en '$ComputerName'. El usuario debe haber iniciado sesion al menos una vez."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    $idx = 0
+    foreach ($p in @($perfiles)) {
+        $idx++
+        $loadColor = if ($p.Loaded) { [System.Drawing.Color]::Yellow } else { [System.Drawing.Color]::LightGreen }
+        $loadStr   = if ($p.Loaded) { 'Loaded=True ' } else { 'Loaded=False' }
+        Append-Output ("  [{0:D2}] {1,-20} | {2} | {3} | LastUse={4}" -f `
+            $idx, $p.Name, $p.LocalPath, $loadStr, $p.LastUse) $loadColor
+    }
+    Append-Output "" $script:White
+
+    $profilePath = Show-ProfilePicker -Profiles @($perfiles) `
+                       -Title "Restaurar Perfilazo - '$ComputerName'"
+    if (-not $profilePath) { Write-Warn "Cancelado."; return }
+    $usuario = Split-Path $profilePath -Leaf
+
+    # ── Paso 2: Ruta del backup origen ───────────────────────────────
+    $backupRoot = (Get-Input "Ruta del backup a restaurar:" "Restaurar Perfilazo - Origen" "C:\Share").Trim()
+    if ([string]::IsNullOrWhiteSpace($backupRoot)) { Write-Warn "Cancelado."; return }
+
+    # ── Paso 3: Verificar perfil destino (sesion previa confirmada) ───
+    Write-Info "Verificando perfil destino: $profilePath"
+    $perfilOk = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $profilePath -ScriptBlock {
+        param([string]$p)
+        if (-not (Test-Path $p)) { return $false }
+        $prof = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LocalPath -eq $p }
+        return ($null -ne $prof)
+    }
+    if (-not $perfilOk) {
+        Write-Fail "Perfil '$profilePath' no confirmado en Win32_UserProfile. El usuario debe iniciar sesion al menos una vez antes de restaurar."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+    Write-Ok "Perfil destino confirmado: $profilePath"
+
+    # ── Paso 4: Verificar backup ──────────────────────────────────────
+    $backupExists = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $backupRoot -ScriptBlock {
+        param([string]$root); return (Test-Path $root)
+    }
+    if (-not $backupExists) {
+        Write-Fail "Backup no encontrado: $backupRoot en '$ComputerName'."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+    Write-Ok "Backup encontrado: $backupRoot"
+    Append-Output "" $script:White
+
+    # ── Paso 5: Confirmar ─────────────────────────────────────────────
+    if (-not (Confirm-Action (
+        "Restaurar backup:`n  $backupRoot`n`n" +
+        "Perfil destino:`n  $profilePath en '$ComputerName'`n`n" +
+        "Se restaurara: Desktop, Downloads, Documents, Favorites, Pictures,`n" +
+        "Bookmarks y RutaExtra si existen en el backup.`n`n" +
+        "El contenido existente NO se borra (se copia encima).`n`n" +
+        "¿Continuar?"
+    ) "Restaurar Perfilazo - Confirmar")) {
+        Write-Info "Restauracion cancelada."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    # ── Paso 6: Restaurar ─────────────────────────────────────────────
+    Write-Info "Restaurando perfil de '$usuario'..."
+    Set-Status "Restaurando perfil '$usuario'..." ([System.Drawing.Color]::Yellow)
+    $script:outputBox.Update()
+
+    $restResult = Invoke-LocalOrRemote -ComputerName $ComputerName `
+        -ArgumentList $backupRoot, $profilePath `
+        -OperationTimeoutMs 600000 `
+        -ScriptBlock {
+            param([string]$src, [string]$dst)
+
+            $folderMap = @(
+                @{ Name='Desktop';   Src="$src\Desktop";   Dst="$dst\Desktop"   },
+                @{ Name='Downloads'; Src="$src\Downloads"; Dst="$dst\Downloads" },
+                @{ Name='Documents'; Src="$src\Documents"; Dst="$dst\Documents" },
+                @{ Name='Favorites'; Src="$src\Favorites"; Dst="$dst\Favorites" },
+                @{ Name='Pictures';  Src="$src\Pictures";  Dst="$dst\Pictures"  }
+            )
+            $fileMap = @(
+                @{ Name='Chrome_Bookmarks'
+                   Src="$src\BrowserBookmarks\Chrome\Bookmarks"
+                   Dst="$dst\AppData\Local\Google\Chrome\User Data\Default" },
+                @{ Name='Edge_Bookmarks'
+                   Src="$src\BrowserBookmarks\Edge\Bookmarks"
+                   Dst="$dst\AppData\Local\Microsoft\Edge\User Data\Default" }
+            )
+
+            $results = @()
+
+            foreach ($f in $folderMap) {
+                if (-not (Test-Path $f.Src)) {
+                    $results += @{ Item=$f.Name; Status='SKIP'; Details='No existe en backup' }; continue
+                }
+                $null = robocopy $f.Src $f.Dst /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
+                $ec = $LASTEXITCODE
+                $st = if ($ec -ge 8) { 'ERROR' } else { 'OK' }
+                $results += @{ Item=$f.Name; Status=$st; Details="rc=$ec" }
+            }
+
+            foreach ($fi in $fileMap) {
+                if (-not (Test-Path $fi.Src)) {
+                    $results += @{ Item=$fi.Name; Status='SKIP'; Details='No existe en backup' }; continue
+                }
+                if (-not (Test-Path $fi.Dst)) { New-Item $fi.Dst -ItemType Directory -Force | Out-Null }
+                try {
+                    Copy-Item $fi.Src $fi.Dst -Force -ErrorAction Stop
+                    $results += @{ Item=$fi.Name; Status='OK'; Details='Restaurado' }
+                } catch {
+                    $results += @{ Item=$fi.Name; Status='ERROR'; Details=$_.Exception.Message }
+                }
+            }
+
+            $extraSrc = "$src\RutaExtra"
+            if (Test-Path $extraSrc) {
+                $extraDst = "$dst\RutaExtra"
+                $isDir = (Get-Item $extraSrc).PSIsContainer
+                if ($isDir) {
+                    $null = robocopy $extraSrc $extraDst /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
+                    $ec = $LASTEXITCODE
+                    $st = if ($ec -ge 8) { 'ERROR' } else { 'OK' }
+                    $results += @{ Item='RutaExtra'; Status=$st; Details="rc=$ec (en $extraDst)" }
+                } else {
+                    if (-not (Test-Path $extraDst)) { New-Item $extraDst -ItemType Directory -Force | Out-Null }
+                    try {
+                        Copy-Item $extraSrc $extraDst -Force -ErrorAction Stop
+                        $results += @{ Item='RutaExtra'; Status='OK'; Details="Restaurado en $extraDst" }
+                    } catch {
+                        $results += @{ Item='RutaExtra'; Status='ERROR'; Details=$_.Exception.Message }
+                    }
+                }
+            }
+
+            return @{ Results=$results }
+        }
+
+    if (-not $restResult) {
+        Write-Fail "Sin respuesta durante la restauracion. Abortando."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    Write-Info "Resultado de restauracion:"
+    $nOk = 0; $nErr = 0; $nSkip = 0
+    foreach ($r in $restResult.Results) {
+        $color = switch ($r.Status) {
+            'OK'    { [System.Drawing.Color]::LightGreen }
+            'SKIP'  { [System.Drawing.Color]::Gray       }
+            default { [System.Drawing.Color]::Tomato     }
+        }
+        Append-Output ("  [{0,-6}] {1,-22}  {2}" -f $r.Status, $r.Item, $r.Details) $color
+        switch ($r.Status) { 'OK' { $nOk++ } 'ERROR' { $nErr++ } default { $nSkip++ } }
+    }
+    Append-Output "" $script:White
+    Write-Info "Resumen: Restaurados=$nOk  Omitidos=$nSkip  Errores=$nErr"
+    Append-Output "" $script:White
+
+    if ($nOk -eq 0) {
+        Write-Fail "No se restauro ningun elemento. Verifica la ruta del backup."
+    } else {
+        $st = if ($nErr -gt 0) { "con $nErr error(es)" } else { "correctamente" }
+        Write-Ok "Restauracion completada $st. Restaurados=$nOk Omitidos=$nSkip"
+    }
+
+    Write-Sep
+    Append-Output "" $script:White
+}
+
 #endregion
 
 #
@@ -2498,7 +2692,8 @@ $cboMaintenance.Items.AddRange(@(
     "SCCM Repair / Reinstall",
     "Reparacion sistema (DISM + SFC)",
     "ChkDsk /r",
-    "Perfilazo"
+    "Perfilazo",
+    "Restaurar Perfilazo"
 ))
 $cboMaintenance.SelectedIndex = 0
 $pActions.Controls.Add($cboMaintenance)
@@ -3012,6 +3207,11 @@ $btnExecute.Add_Click({
                 -StatusMsg "Perfilazo en '$target'..." `
                 -Action    { Invoke-Perfilazo -ComputerName $target }
         }
+        "Restaurar Perfilazo" {
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "Restaurar Perfilazo en '$target'..." `
+                -Action    { Invoke-PerfilRestore -ComputerName $target }
+        }
     }
 })
 
@@ -3077,7 +3277,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.14.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.14.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
