@@ -759,9 +759,14 @@ function Invoke-SoftwareCheck {
 
     $apps = $null
     try {
-        $apps = Get-CimInstance -ComputerName $ComputerName -Namespace "root\ccm\ClientSDK" `
-                                -ClassName "CCM_Application" -ErrorAction Stop |
-                Where-Object { $_.Name -like "*$appName*" }
+        # Usar Invoke-LocalOrRemote (WinRM) en lugar de Get-CimInstance -ComputerName (DCOM/CIM)
+        # para mantener coherencia con Invoke-MasterCheck y el helper Test-RemoteSccmReady.
+        $apps = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $appName -ScriptBlock {
+            param($name)
+            Get-CimInstance -Namespace "root\ccm\ClientSDK" -ClassName "CCM_Application" `
+                            -ErrorAction Stop |
+            Where-Object { $_.Name -like "*$name*" }
+        }
     } catch {
         if ($zone -eq 'VPN') {
             Write-Fail "No se puede acceder al cliente SCCM remotamente (posible VPN o firewall)."
@@ -1903,6 +1908,17 @@ function Show-NacRemediationForm {
             $global:nacRtb.ReadOnly = $true
         }
     }
+    # Escapa caracteres especiales RFC 4515 antes de insertar valores en filtros LDAP.
+    # Obligatorio para: \ * ( ) y el caracter nulo.
+    $EscapeLdap = {
+        param([string]$Value)
+        $Value = $Value.Replace('\', '\5c')
+        $Value = $Value.Replace('*', '\2a')
+        $Value = $Value.Replace('(', '\28')
+        $Value = $Value.Replace(')', '\29')
+        $Value = $Value.Replace([char]0, '\00')
+        return $Value
+    }
 
     # ── Formulario NAC ───────────────────────────────────────────
     $nacForm                 = New-Object System.Windows.Forms.Form
@@ -2103,7 +2119,8 @@ function Show-NacRemediationForm {
             $ldapPath = $nacPaths[$srv]
             $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
             $ds = New-Object System.DirectoryServices.DirectorySearcher($de)
-            $ds.Filter = "(|(networkAddress=$mac)(deviceRemediationID=$mac))"
+            $macE = & $EscapeLdap $mac
+            $ds.Filter = "(|(networkAddress=$macE)(deviceRemediationID=$macE))"
             $ds.PropertiesToLoad.AddRange(@("cn","deviceType","deviceZone","networkAddress",
                 "deviceRemediationID","adminDisplayName","whenCreated","description",
                 "devicemodel","device8021xcapable","distinguishedName"))
@@ -2139,7 +2156,7 @@ function Show-NacRemediationForm {
             $ldapPath = $nacPaths[$srv]
             $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
             $ds = New-Object System.DirectoryServices.DirectorySearcher($de)
-            $ds.Filter = "(cn=$cn)"
+            $ds.Filter = "(cn=$(& $EscapeLdap $cn))"
             $ds.PropertiesToLoad.AddRange(@("cn","deviceType","deviceZone","networkAddress",
                 "deviceRemediationID","adminDisplayName","whenCreated","description",
                 "devicemodel","device8021xcapable","distinguishedName"))
@@ -2178,7 +2195,7 @@ function Show-NacRemediationForm {
                 $ldapPath = $nacPaths[$srv]
                 $de = New-Object System.DirectoryServices.DirectoryEntry($ldapPath)
                 $ds = New-Object System.DirectoryServices.DirectorySearcher($de)
-                $ds.Filter = "(cn=$cn)"
+                $ds.Filter = "(cn=$(& $EscapeLdap $cn))"
                 $ds.PropertiesToLoad.Add("networkAddress") | Out-Null
                 $ds.SearchScope = [System.DirectoryServices.SearchScope]::Subtree
                 $found = $ds.FindOne()
@@ -2763,10 +2780,10 @@ function Get-ValidComputer {
         return $computer
     }
     Set-Status "Comprobando conectividad con '$computer'..." ([System.Drawing.Color]::Yellow)
-    # Resolver IP actual desde DNS (evita cache): la identidad es el hostname, la IP es temporal
+    # Resolver IP: solo informativo. El ping va SIEMPRE por hostname, igual que el boton Ping,
+    # para mantener consistencia y evitar falsos negativos por ICMP filtrado por IP en VPN.
     $freshIP    = Resolve-FreshIP $computer
-    $pingTarget = if ($freshIP) { $freshIP } else { $computer }
-    if (-not (Test-Connection -ComputerName $pingTarget -Count 1 -Quiet)) {
+    if (-not (Test-Connection -ComputerName $computer -Count 1 -Quiet)) {
         Write-Fail "El equipo '$computer' no responde a ping (ICMP bloqueado o apagado)."
         Set-Status "Equipo no accesible" ([System.Drawing.Color]::Tomato)
         return $null
