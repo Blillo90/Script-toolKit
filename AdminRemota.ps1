@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.14.2 (GUI)
+    Herramienta de administracion remota unificada v2.14.3 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.14.2
+    2.14.3
 #>
 
 [CmdletBinding()]
@@ -2356,15 +2356,51 @@ function Invoke-PerfilRestore {
     }
     Write-Ok "Perfil destino confirmado: $profilePath"
 
-    # ── Paso 4: Verificar backup ──────────────────────────────────────
-    $backupExists = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $backupRoot -ScriptBlock {
-        param([string]$root); return (Test-Path $root)
-    }
-    if (-not $backupExists) {
-        Write-Fail "Backup no encontrado: $backupRoot en '$ComputerName'."
+    # ── Paso 4: Verificar y resolver ruta de backup ───────────────────
+    Write-Info "Buscando backup en: $backupRoot"
+    $backupResolve = Invoke-LocalOrRemote -ComputerName $ComputerName `
+        -ArgumentList $backupRoot, $usuario, $ComputerName `
+        -ScriptBlock {
+            param([string]$root, [string]$user, [string]$pc)
+
+            if (-not (Test-Path $root)) {
+                return @{ OK=$false; Msg="Ruta no existe: $root"; Root=$root; Count=0 }
+            }
+            # La ruta ya apunta directamente al backup si tiene contenido esperado
+            $tieneContenido = (Test-Path "$root\Desktop") -or
+                              (Test-Path "$root\BrowserBookmarks") -or
+                              (Test-Path "$root\Documents")
+            if ($tieneContenido) {
+                return @{ OK=$true; Root=$root; Count=1 }
+            }
+            # Buscar subcarpeta con el patron exacto generado por Perfilazo: PC_usuario_fecha
+            $subs = @(Get-ChildItem $root -Directory -Filter "${pc}_${user}_*" `
+                          -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+            if ($subs.Count -eq 0) {
+                # Fallback: subcarpeta que contenga el nombre de usuario
+                $subs = @(Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+                              Where-Object { $_.Name -like "*${user}*" } |
+                              Sort-Object Name -Descending)
+            }
+            $cnt = $subs.Count
+            if ($cnt -eq 0) {
+                return @{ OK=$false; Msg="Sin estructura de backup ni subcarpetas con '$user' en: $root"; Root=$root; Count=0 }
+            }
+            $best = $subs[0].FullName
+            return @{ OK=$true; Root=$best; Count=$cnt }
+        }
+
+    if (-not $backupResolve -or -not $backupResolve.OK) {
+        $motivo = if ($backupResolve) { $backupResolve.Msg } else { "Sin respuesta del equipo." }
+        Write-Fail "Backup no localizado: $motivo"
         Write-Sep; Append-Output "" $script:White; return
     }
-    Write-Ok "Backup encontrado: $backupRoot"
+
+    $backupRoot = $backupResolve.Root   # ruta real del backup (con timestamp)
+    if ($backupResolve.Count -gt 1) {
+        Write-Warn "Se encontraron $($backupResolve.Count) backups para '$usuario'. Usando el mas reciente."
+    }
+    Write-Ok "Backup localizado: $backupRoot"
     Append-Output "" $script:White
 
     # ── Paso 5: Confirmar ─────────────────────────────────────────────
@@ -2411,7 +2447,7 @@ function Invoke-PerfilRestore {
 
             foreach ($f in $folderMap) {
                 if (-not (Test-Path $f.Src)) {
-                    $results += @{ Item=$f.Name; Status='SKIP'; Details='No existe en backup' }; continue
+                    $results += @{ Item=$f.Name; Status='SKIP'; Details="No existe: $($f.Src)" }; continue
                 }
                 $null = robocopy $f.Src $f.Dst /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
                 $ec = $LASTEXITCODE
@@ -2421,7 +2457,7 @@ function Invoke-PerfilRestore {
 
             foreach ($fi in $fileMap) {
                 if (-not (Test-Path $fi.Src)) {
-                    $results += @{ Item=$fi.Name; Status='SKIP'; Details='No existe en backup' }; continue
+                    $results += @{ Item=$fi.Name; Status='SKIP'; Details="No existe: $($fi.Src)" }; continue
                 }
                 if (-not (Test-Path $fi.Dst)) { New-Item $fi.Dst -ItemType Directory -Force | Out-Null }
                 try {
@@ -3277,7 +3313,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.14.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.14.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
