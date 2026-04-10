@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.15.2 (GUI)
+    Herramienta de administracion remota unificada v2.16.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.15.2
+    2.16.0
 #>
 
 [CmdletBinding()]
@@ -2716,7 +2716,7 @@ function Invoke-CorporateCleanup {
 # ── Bloque superior principal ─────────────────────────────────────
 $topPanel           = New-Object System.Windows.Forms.Panel
 $topPanel.Dock      = "Top"
-$topPanel.Height    = 202
+$topPanel.Height    = 112
 $topPanel.BackColor = $bgPanel
 $form.Controls.Add($topPanel)
 
@@ -2724,7 +2724,7 @@ $form.Controls.Add($topPanel)
 $tlpTop                 = New-Object System.Windows.Forms.TableLayoutPanel
 $tlpTop.Dock            = "Fill"
 $tlpTop.ColumnCount     = 1
-$tlpTop.RowCount        = 7
+$tlpTop.RowCount        = 5
 $tlpTop.BackColor       = [System.Drawing.Color]::Transparent
 $tlpTop.Margin          = New-Object System.Windows.Forms.Padding(0)
 $tlpTop.Padding         = New-Object System.Windows.Forms.Padding(0)
@@ -2740,7 +2740,7 @@ $_cs.Width    = 100
 
 # Filas: alturas fijas en pixeles
 $tlpTop.RowStyles.Clear()
-foreach ($_h in @(48, 30, 28, 2, 30, 30, 34)) {
+foreach ($_h in @(48, 30, 28, 2, 34)) {
     $_rs          = New-Object System.Windows.Forms.RowStyle
     $_rs.SizeType = [System.Windows.Forms.SizeType]::Absolute
     $_rs.Height   = $_h
@@ -2844,10 +2844,6 @@ $rbNacional.Add_CheckedChanged({
     $script:Modo = if ($rbNacional.Checked) { "Nacional" } else { "Divisional" }
 })
 
-# NAC: herramienta avanzada, desplazada a la derecha para menor prominencia
-$btnNAC = New-FlatButton "  NAC Remediation" 660 0 150 28 ([System.Drawing.Color]::FromArgb(80, 0, 120))
-$btnNAC.Add_Click({ Show-NacRemediationForm })
-$pOptions.Controls.Add($btnNAC)
 
 # ── Fila 3: separador visual ──────────────────────────────────────
 $pSep           = New-Object System.Windows.Forms.Panel
@@ -2856,62 +2852,14 @@ $pSep.BackColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
 $pSep.Margin    = New-Object System.Windows.Forms.Padding(0)
 $tlpTop.Controls.Add($pSep, 0, 3)
 
-# ── Fila 4: diagnostico ───────────────────────────────────────────
-# Botones de diagnostico con ancho uniforme (155px).
-$pDiag           = New-Object System.Windows.Forms.Panel
-$pDiag.Dock      = "Fill"
-$pDiag.BackColor = [System.Drawing.Color]::Transparent
-$pDiag.Margin    = New-Object System.Windows.Forms.Padding(0)
-$tlpTop.Controls.Add($pDiag, 0, 4)
-
-$btnMaster   = New-FlatButton "  Masterizacion"     10 1 155 28 $accent
-$btnSoftware = New-FlatButton "  Software SCCM"    170 1 155 28 $accent
-$btnInfo     = New-FlatButton "  Info del Sistema" 330 1 155 28 ([System.Drawing.Color]::FromArgb(40, 110, 60))
-
-foreach ($b in @($btnMaster, $btnSoftware, $btnInfo)) { $pDiag.Controls.Add($b) }
-
-# ── Fila 5: acciones ──────────────────────────────────────────────
-# Borrar USB y Reiniciar a la izquierda; combo + Ejecutar a la derecha.
-$pActions           = New-Object System.Windows.Forms.Panel
-$pActions.Dock      = "Fill"
-$pActions.BackColor = [System.Drawing.Color]::Transparent
-$pActions.Margin    = New-Object System.Windows.Forms.Padding(0)
-$tlpTop.Controls.Add($pActions, 0, 5)
-
-$btnUsb     = New-FlatButton "  Borrar USB"  10 1 120 28 $btnRed
-$btnRestart = New-FlatButton "  Reiniciar"  135 1 115 28 ([System.Drawing.Color]::FromArgb(160, 80, 0))
-
-$cboMaintenance               = New-Object System.Windows.Forms.ComboBox
-$cboMaintenance.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-$cboMaintenance.BackColor     = [System.Drawing.Color]::FromArgb(55, 55, 58)
-$cboMaintenance.ForeColor     = $white
-$cboMaintenance.Font          = $fontSmall
-$cboMaintenance.Location      = New-Object System.Drawing.Point(258, 2)
-$cboMaintenance.Size          = New-Object System.Drawing.Size(320, 26)
-$cboMaintenance.Items.AddRange(@(
-    "GPUpdate /force",
-    "Ciclos SCCM",
-    "SCCM Repair / Reinstall",
-    "Reparacion sistema (DISM + SFC)",
-    "ChkDsk /r",
-    "Perfilazo",
-    "Restaurar Perfilazo",
-    "Limpieza temporales (corporate)"
-))
-$cboMaintenance.SelectedIndex = 0
-$pActions.Controls.Add($cboMaintenance)
-
-$btnExecute   = New-FlatButton "  Ejecutar"    583 1 105 28 ([System.Drawing.Color]::FromArgb(0, 130, 60))
-foreach ($b in @($btnUsb, $btnRestart, $btnExecute)) { $pActions.Controls.Add($b) }
-
-# ── Fila 6: bloque de progreso + estado ───────────────────────────
+# ── Fila 4: bloque de progreso + estado ───────────────────────────
 # progressBar + Cancelar en la misma fila para asociarlos visualmente.
 # Limpiar como utilidad secundaria al extremo derecho.
 $pProg           = New-Object System.Windows.Forms.Panel
 $pProg.Dock      = "Fill"
 $pProg.BackColor = [System.Drawing.Color]::Transparent
 $pProg.Margin    = New-Object System.Windows.Forms.Padding(0)
-$tlpTop.Controls.Add($pProg, 0, 6)
+$tlpTop.Controls.Add($pProg, 0, 4)
 
 $script:progressBar          = New-Object System.Windows.Forms.ProgressBar
 $script:progressBar.Location = New-Object System.Drawing.Point(10, 8)
@@ -2937,6 +2885,78 @@ $pProg.Controls.Add($script:progressLabel)
 
 $btnClear = New-FlatButton "  Limpiar" 735 3 80 28 $btnGray
 $pProg.Controls.Add($btnClear)
+
+# ── Panel de acciones agrupadas ───────────────────────────────────
+#   5 grupos horizontales: Diagnostico | SCCM/Politicas | Sistema | Usuario | Sensibles
+#   Cada grupo es un Panel con borde + label cabecera + botones absolutos.
+function New-GroupPanel {
+    param([string]$Title, [int]$X, [int]$W, [int]$H = 134)
+    $gp             = New-Object System.Windows.Forms.Panel
+    $gp.Location    = New-Object System.Drawing.Point($X, 4)
+    $gp.Size        = New-Object System.Drawing.Size($W, $H)
+    $gp.BackColor   = [System.Drawing.Color]::FromArgb(38, 38, 42)
+    $gp.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+
+    $lbl           = New-Object System.Windows.Forms.Label
+    $lbl.Text      = "  $Title"
+    $lbl.Location  = New-Object System.Drawing.Point(0, 0)
+    $lbl.Size      = New-Object System.Drawing.Size($W, 18)
+    $lbl.ForeColor = [System.Drawing.Color]::FromArgb(0, 190, 255)
+    $lbl.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 32)
+    $lbl.Font      = $fontSmall
+    $lbl.TextAlign = "MiddleLeft"
+    $gp.Controls.Add($lbl)
+    return $gp
+}
+
+$actionPanel           = New-Object System.Windows.Forms.Panel
+$actionPanel.Dock      = "Top"
+$actionPanel.Height    = 144
+$actionPanel.BackColor = $bgPanel
+$form.Controls.Add($actionPanel)
+
+# ── G1: Diagnostico (x=4, w=215) ─────────────────────────────────
+$gDiag = New-GroupPanel "Diagnostico" 4 215
+$bw1   = 205
+$btnMaster     = New-FlatButton "  Masterizacion"     4  22 $bw1 24 $accent
+$btnSoftware   = New-FlatButton "  Software SCCM"     4  50 $bw1 24 $accent
+$btnInfo       = New-FlatButton "  Info del Sistema"  4  78 $bw1 24 ([System.Drawing.Color]::FromArgb(40, 110, 60))
+$btnSccmRepair = New-FlatButton "  SCCM Repair"       4 106 $bw1 24 ([System.Drawing.Color]::FromArgb(0, 80, 100))
+foreach ($b in @($btnMaster, $btnSoftware, $btnInfo, $btnSccmRepair)) { $gDiag.Controls.Add($b) }
+
+# ── G2: SCCM / Politicas (x=223, w=165) ──────────────────────────
+$gSccm         = New-GroupPanel "SCCM / Politicas" 223 165
+$bw2           = 155
+$btnGpUpdate   = New-FlatButton "  GPUpdate /force" 4 22 $bw2 24 ([System.Drawing.Color]::FromArgb(0, 90, 160))
+$btnSccmCycles = New-FlatButton "  Ciclos SCCM"     4 50 $bw2 24 ([System.Drawing.Color]::FromArgb(0, 90, 160))
+foreach ($b in @($btnGpUpdate, $btnSccmCycles)) { $gSccm.Controls.Add($b) }
+
+# ── G3: Sistema (x=392, w=180) ───────────────────────────────────
+$gSistema  = New-GroupPanel "Sistema" 392 180
+$bw3       = 170
+$btnRepair  = New-FlatButton "  DISM + SFC"          4 22 $bw3 24 ([System.Drawing.Color]::FromArgb(130, 80, 0))
+$btnChkdsk  = New-FlatButton "  ChkDsk /r"           4 50 $bw3 24 ([System.Drawing.Color]::FromArgb(150, 60, 0))
+$btnCleanup = New-FlatButton "  Limpieza temporales" 4 78 $bw3 24 ([System.Drawing.Color]::FromArgb(0, 100, 80))
+foreach ($b in @($btnRepair, $btnChkdsk, $btnCleanup)) { $gSistema.Controls.Add($b) }
+
+# ── G4: Usuario (x=576, w=170) ───────────────────────────────────
+$gUsuario         = New-GroupPanel "Usuario" 576 170
+$bw4              = 160
+$btnPerfilazo     = New-FlatButton "  Perfilazo"           4 22 $bw4 24 $accent
+$btnPerfilRestore = New-FlatButton "  Restaurar Perfilazo" 4 50 $bw4 24 ([System.Drawing.Color]::FromArgb(0, 80, 140))
+foreach ($b in @($btnPerfilazo, $btnPerfilRestore)) { $gUsuario.Controls.Add($b) }
+
+# ── G5: Sensibles (x=750, w=155) ─────────────────────────────────
+$gSensibles = New-GroupPanel "Sensibles" 750 155
+$bw5        = 145
+$btnRestart = New-FlatButton "  Reiniciar"  4 22 $bw5 24 ([System.Drawing.Color]::FromArgb(160, 80, 0))
+$btnUsb     = New-FlatButton "  Borrar USB" 4 50 $bw5 24 $btnRed
+$btnUsb.Enabled = $false   # Temporalmente deshabilitado - pendiente reactivacion
+foreach ($b in @($btnRestart, $btnUsb)) { $gSensibles.Controls.Add($b) }
+
+foreach ($g in @($gDiag, $gSccm, $gSistema, $gUsuario, $gSensibles)) {
+    $actionPanel.Controls.Add($g)
+}
 
 # ── Area de salida ────────────────────────────────────────────────
 $script:outputBox             = New-Object System.Windows.Forms.RichTextBox
@@ -2970,7 +2990,7 @@ $form.Controls.Add($rightPanel)
 $tlpRight                 = New-Object System.Windows.Forms.TableLayoutPanel
 $tlpRight.Dock            = "Fill"
 $tlpRight.ColumnCount     = 1
-$tlpRight.RowCount        = 3
+$tlpRight.RowCount        = 4
 $tlpRight.BackColor       = [System.Drawing.Color]::Transparent
 $tlpRight.Margin          = New-Object System.Windows.Forms.Padding(0)
 $tlpRight.Padding         = New-Object System.Windows.Forms.Padding(0)
@@ -2984,28 +3004,43 @@ $_rc.Width    = 100
 [void]$tlpRight.ColumnStyles.Add($_rc)
 
 $tlpRight.RowStyles.Clear()
-# Fila 0: cabecera fija 26px
+# Fila 0: NAC Remediation 32px
+$_rr_nac          = New-Object System.Windows.Forms.RowStyle
+$_rr_nac.SizeType = [System.Windows.Forms.SizeType]::Absolute
+$_rr_nac.Height   = 32
+[void]$tlpRight.RowStyles.Add($_rr_nac)
+# Fila 1: cabecera fija 26px
 $_rr0          = New-Object System.Windows.Forms.RowStyle
 $_rr0.SizeType = [System.Windows.Forms.SizeType]::Absolute
 $_rr0.Height   = 26
 [void]$tlpRight.RowStyles.Add($_rr0)
-# Fila 1: lista ocupa todo el espacio restante
+# Fila 2: lista ocupa todo el espacio restante
 $_rr1          = New-Object System.Windows.Forms.RowStyle
 $_rr1.SizeType = [System.Windows.Forms.SizeType]::Percent
 $_rr1.Height   = 100
 [void]$tlpRight.RowStyles.Add($_rr1)
-# Fila 2: toolbar inferior fija 96px
+# Fila 3: toolbar inferior fija 96px
 $_rr2          = New-Object System.Windows.Forms.RowStyle
 $_rr2.SizeType = [System.Windows.Forms.SizeType]::Absolute
 $_rr2.Height   = 96
 [void]$tlpRight.RowStyles.Add($_rr2)
 
-# Fila 0 del TLP: cabecera
+# Fila 0 del TLP: NAC Remediation (herramienta avanzada)
+$nacRow           = New-Object System.Windows.Forms.Panel
+$nacRow.Dock      = "Fill"
+$nacRow.BackColor = [System.Drawing.Color]::FromArgb(38, 38, 42)
+$nacRow.Margin    = New-Object System.Windows.Forms.Padding(0)
+$btnNAC = New-FlatButton "  NAC Remediation" 3 3 202 26 ([System.Drawing.Color]::FromArgb(80, 0, 120))
+$btnNAC.Add_Click({ Show-NacRemediationForm })
+$nacRow.Controls.Add($btnNAC)
+$tlpRight.Controls.Add($nacRow, 0, 0)
+
+# Fila 1 del TLP: cabecera
 $rightHeader             = New-Object System.Windows.Forms.Panel
 $rightHeader.Dock        = "Fill"
 $rightHeader.BackColor   = [System.Drawing.Color]::FromArgb(28, 28, 32)
 $rightHeader.Margin      = New-Object System.Windows.Forms.Padding(0)
-$tlpRight.Controls.Add($rightHeader, 0, 0)
+$tlpRight.Controls.Add($rightHeader, 0, 1)
 
 $lblEquiposTitle           = New-Object System.Windows.Forms.Label
 $lblEquiposTitle.Text      = "  Equipos en seguimiento"
@@ -3015,7 +3050,7 @@ $lblEquiposTitle.Font      = $fontSmall
 $lblEquiposTitle.TextAlign = "MiddleLeft"
 $rightHeader.Controls.Add($lblEquiposTitle)
 
-# Fila 1 del TLP: ListView (llena el espacio restante entre cabecera y toolbar)
+# Fila 2 del TLP: ListView (llena el espacio restante entre cabecera y toolbar)
 $script:lvEquipos               = New-Object System.Windows.Forms.ListView
 $script:lvEquipos.Dock          = "Fill"
 $script:lvEquipos.View          = [System.Windows.Forms.View]::Details
@@ -3031,14 +3066,14 @@ $script:lvEquipos.ShowItemToolTips = $true
 $script:lvEquipos.Margin        = New-Object System.Windows.Forms.Padding(0)
 $null = $script:lvEquipos.Columns.Add("Estado", 68)
 $null = $script:lvEquipos.Columns.Add("Equipo", 132)
-$tlpRight.Controls.Add($script:lvEquipos, 0, 1)
+$tlpRight.Controls.Add($script:lvEquipos, 0, 2)
 
-# Fila 2 del TLP: toolbar de gestion de equipos
+# Fila 3 del TLP: toolbar de gestion de equipos
 $rightBtnPanel           = New-Object System.Windows.Forms.Panel
 $rightBtnPanel.Dock      = "Fill"
 $rightBtnPanel.BackColor = [System.Drawing.Color]::FromArgb(28, 28, 28)
 $rightBtnPanel.Margin    = New-Object System.Windows.Forms.Padding(0)
-$tlpRight.Controls.Add($rightBtnPanel, 0, 2)
+$tlpRight.Controls.Add($rightBtnPanel, 0, 3)
 
 $btnAddEquipo      = New-FlatButton "Anadir equipo"    3  3 202 26 ([System.Drawing.Color]::FromArgb(0, 100, 50))
 $btnRemoveEquipo   = New-FlatButton "Quitar selec."    3 33 202 26 $btnGray
@@ -3177,14 +3212,18 @@ function Load-EquipoList {
 # ── Helpers de control de UI ──────────────────────────────────────
 
 # Lista de botones de accion (todos excepto Cancelar y Limpiar)
-$script:ActionButtons = @($btnMaster,$btnSoftware,$btnInfo,$btnRestart,$btnExecute,$btnPing)
-$btnUsb.Enabled = $false  # Temporalmente deshabilitado - pendiente reactivacion
+$script:ActionButtons = @(
+    $btnMaster, $btnSoftware, $btnInfo, $btnSccmRepair,
+    $btnGpUpdate, $btnSccmCycles,
+    $btnRepair, $btnChkdsk, $btnCleanup,
+    $btnPerfilazo, $btnPerfilRestore,
+    $btnRestart, $btnPing
+)
 
 function Set-ButtonsEnabled {
     param([bool]$Enabled)
     foreach ($b in $script:ActionButtons) { $b.Enabled = $Enabled }
-    $cboMaintenance.Enabled = $Enabled
-    $btnCancel.Enabled      = -not $Enabled
+    $btnCancel.Enabled = -not $Enabled
 }
 
 function Get-ValidComputer {
@@ -3339,88 +3378,94 @@ $btnRestart.Add_Click({
     Set-ButtonsEnabled $true
 })
 
-$btnExecute.Add_Click({
-    $target = Get-ValidComputer
-    if (-not $target) { return }
-    $opcion = $cboMaintenance.SelectedItem
-    switch ($opcion) {
-        "GPUpdate /force" {
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "Ejecutando gpupdate /force en '$target'..." `
-                -Action {
-                    Write-Sep
-                    Write-Info "gpupdate /force en '$target'..."
-                    $res = Invoke-RemoteGpupdate -ComputerName $target
-                    Write-Sep
-                    Append-Output "" $script:White
-                    if ($res -and $res.Status -eq "OK") {
-                        Write-Ok "gpupdate completado correctamente ($($res.Details))."
-                        Set-Status "GPUpdate OK en '$target'" ([System.Drawing.Color]::LightGreen)
-                    } else {
-                        $detail = if ($res) { $res.Details } else { "Sin respuesta remota" }
-                        Write-Warn "gpupdate: $detail."
-                        Set-Status "GPUpdate WARN en '$target'" ([System.Drawing.Color]::Yellow)
-                    }
+$btnSccmRepair.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "SCCM Repair / Reinstall en '$target'..." `
+        -Action    { Invoke-SccmRepair -ComputerName $target }
+})
+
+$btnGpUpdate.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "GPUpdate /force en '$target'..." `
+        -Action {
+            Write-Sep
+            Write-Info "gpupdate /force en '$target'..."
+            $res = Invoke-RemoteGpupdate -ComputerName $target
+            Write-Sep; Append-Output "" $script:White
+            if ($res -and $res.Status -eq "OK") {
+                Write-Ok "gpupdate completado ($($res.Details))."
+                Set-Status "GPUpdate OK en '$target'" ([System.Drawing.Color]::LightGreen)
+            } else {
+                $detail = if ($res) { $res.Details } else { "Sin respuesta remota" }
+                Write-Warn "gpupdate: $detail."
+                Set-Status "GPUpdate WARN en '$target'" ([System.Drawing.Color]::Yellow)
+            }
+        }
+})
+
+$btnSccmCycles.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Ciclos SCCM en '$target'..." `
+        -Action {
+            Write-Sep
+            Write-Info "Ciclos de politicas SCCM en '$target'..."
+            $result = Invoke-LocalOrRemote -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
+            Write-Sep; Append-Output "" $script:White
+            if ($result) {
+                switch ($result.Status) {
+                    "OK"    { Write-Ok   "Ciclos completados: $($result.Details)"
+                              Set-Status "Ciclos SCCM OK en '$target'" ([System.Drawing.Color]::LightGreen) }
+                    "WARN"  { Write-Warn "Ciclos con avisos: $($result.Details)"
+                              Set-Status "Ciclos SCCM WARN en '$target'" ([System.Drawing.Color]::Yellow) }
+                    "ERROR" { Write-Fail "Ciclos con errores: $($result.Details)"
+                              Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato) }
                 }
+            } else {
+                Write-Warn "Sin respuesta del cliente SCCM. Verifica que CcmExec esta activo."
+                Set-Status "Sin respuesta SCCM en '$target'" ([System.Drawing.Color]::Yellow)
+            }
         }
-        "Ciclos SCCM" {
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "Lanzando ciclos SCCM en '$target'..." `
-                -Action {
-                    Write-Sep
-                    Write-Info "Ciclos de politicas SCCM en '$target'..."
-                    $result = Invoke-LocalOrRemote -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
-                    Write-Sep
-                    Append-Output "" $script:White
-                    if ($result) {
-                        switch ($result.Status) {
-                            "OK"    { Write-Ok   "Ciclos completados: $($result.Details)"
-                                      Set-Status "Ciclos SCCM OK en '$target'" ([System.Drawing.Color]::LightGreen) }
-                            "WARN"  { Write-Warn "Ciclos con avisos: $($result.Details)"
-                                      Set-Status "Ciclos SCCM con avisos" ([System.Drawing.Color]::Yellow) }
-                            "ERROR" { Write-Fail "Ciclos con errores: $($result.Details)"
-                                      Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato) }
-                        }
-                    } else {
-                        Write-Warn "Sin respuesta del cliente SCCM. Verifica que CcmExec esta activo."
-                        Set-Status "Sin respuesta SCCM en '$target'" ([System.Drawing.Color]::Yellow)
-                    }
-                }
-        }
-        "SCCM Repair / Reinstall" {
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "SCCM Repair / Reinstall en '$target'..." `
-                -Action    { Invoke-SccmRepair -ComputerName $target }
-        }
-        "Reparacion sistema (DISM + SFC)" {
-            Set-Progress 0 ""
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "Reparacion del sistema en '$target'..." `
-                -Action    { Invoke-RemoteRepair -ComputerName $target }
-            Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
-        }
-        "ChkDsk /r" {
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "Ejecutando ChkDsk /r en '$target'..." `
-                -Action    { Invoke-RemoteChkdsk -ComputerName $target }
-            Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
-        }
-        "Perfilazo" {
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "Perfilazo en '$target'..." `
-                -Action    { Invoke-Perfilazo -ComputerName $target }
-        }
-        "Restaurar Perfilazo" {
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "Restaurar Perfilazo en '$target'..." `
-                -Action    { Invoke-PerfilRestore -ComputerName $target }
-        }
-        "Limpieza temporales (corporate)" {
-            Invoke-ActionButton -ComputerName $target -UseCancel $false `
-                -StatusMsg "Limpieza corporate en '$target'..." `
-                -Action    { Invoke-CorporateCleanup -ComputerName $target }
-        }
-    }
+})
+
+$btnRepair.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Set-Progress 0 ""
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Reparacion del sistema en '$target'..." `
+        -Action    { Invoke-RemoteRepair -ComputerName $target }
+    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+})
+
+$btnChkdsk.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "ChkDsk /r en '$target'..." `
+        -Action    { Invoke-RemoteChkdsk -ComputerName $target }
+    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+})
+
+$btnCleanup.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Limpieza corporate en '$target'..." `
+        -Action    { Invoke-CorporateCleanup -ComputerName $target }
+})
+
+$btnPerfilazo.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Perfilazo en '$target'..." `
+        -Action    { Invoke-Perfilazo -ComputerName $target }
+})
+
+$btnPerfilRestore.Add_Click({
+    $target = Get-ValidComputer; if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target -UseCancel $false `
+        -StatusMsg "Restaurar Perfilazo en '$target'..." `
+        -Action    { Invoke-PerfilRestore -ComputerName $target }
 })
 
 $btnClear.Add_Click({
@@ -3485,7 +3530,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.15.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.16.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
