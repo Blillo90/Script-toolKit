@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.16.0 (GUI)
+    Herramienta de administracion remota unificada v2.16.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.16.0
+    2.16.1
 #>
 
 [CmdletBinding()]
@@ -3065,8 +3065,9 @@ $script:lvEquipos.BorderStyle   = "None"
 $script:lvEquipos.Font          = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Regular)
 $script:lvEquipos.ShowItemToolTips = $true
 $script:lvEquipos.Margin        = New-Object System.Windows.Forms.Padding(0)
-$null = $script:lvEquipos.Columns.Add("Estado", 68)
-$null = $script:lvEquipos.Columns.Add("Equipo", 132)
+$null = $script:lvEquipos.Columns.Add("Estado", 56)
+$null = $script:lvEquipos.Columns.Add("Equipo", 96)
+$null = $script:lvEquipos.Columns.Add("Mast.", 54)
 $tlpRight.Controls.Add($script:lvEquipos, 0, 2)
 
 # Fila 3 del TLP: toolbar de gestion de equipos
@@ -3343,9 +3344,19 @@ $btnPing.Add_Click({
 $btnMaster.Add_Click({
     $target = Get-ValidComputer
     if (-not $target) { return }
+    Set-MastStatus -Name $target -Status 'Pendiente'
     Invoke-ActionButton -ComputerName $target `
         -StatusMsg "Comprobando masterizacion de '$target'..." `
         -Action    { Invoke-MasterCheck -ComputerName $target }
+    # Evaluar resultado con los mismos criterios que Show-Summary
+    if ($script:StepResults.Count -gt 0) {
+        $blocked = $script:StepResults | Where-Object {
+            $_.Status -eq "ERROR" -or
+            ($_.Status -eq "WARN" -and $_.Step -ne "success.txt")
+        }
+        $mastResult = if (-not $blocked) { 'OK' } else { 'Error' }
+        Set-MastStatus -Name $target -Status $mastResult
+    }
 })
 
 $btnSoftware.Add_Click({
@@ -3551,7 +3562,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.16.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.16.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
