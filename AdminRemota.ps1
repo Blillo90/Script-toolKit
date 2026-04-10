@@ -1916,7 +1916,7 @@ function Show-NacRemediationForm {
         $Value = $Value.Replace('*', '\2a')
         $Value = $Value.Replace('(', '\28')
         $Value = $Value.Replace(')', '\29')
-        $Value = $Value.Replace([char]0, '\00')
+        $Value = $Value -replace "`0", '\00'
         return $Value
     }
 
