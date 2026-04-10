@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.16.1 (GUI)
+    Herramienta de administracion remota unificada v2.16.2 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.16.1
+    2.16.2
 #>
 
 [CmdletBinding()]
@@ -2717,7 +2717,7 @@ function Invoke-CorporateCleanup {
 # ── Bloque superior principal ─────────────────────────────────────
 $topPanel           = New-Object System.Windows.Forms.Panel
 $topPanel.Dock      = "Top"
-$topPanel.Height    = 112
+$topPanel.Height    = 124
 $topPanel.BackColor = $bgPanel
 $form.Controls.Add($topPanel)
 
@@ -2741,7 +2741,7 @@ $_cs.Width    = 100
 
 # Filas: alturas fijas en pixeles
 $tlpTop.RowStyles.Clear()
-foreach ($_h in @(48, 30, 28, 2, 34)) {
+foreach ($_h in @(60, 30, 28, 2, 34)) {
     $_rs          = New-Object System.Windows.Forms.RowStyle
     $_rs.SizeType = [System.Windows.Forms.SizeType]::Absolute
     $_rs.Height   = $_h
@@ -2768,7 +2768,7 @@ $lblSub.Text        = "  Accenture / Airbus  |  PowerShell 5.1"
 $lblSub.Font        = $fontSmall
 $lblSub.ForeColor   = $silver
 $lblSub.AutoSize    = $true
-$lblSub.Location    = New-Object System.Drawing.Point(8, 28)
+$lblSub.Location    = New-Object System.Drawing.Point(8, 36)
 $pTitle.Controls.Add($lblSub)
 
 # ── Fila 1: contexto - equipo + Ping + resultado ──────────────────
@@ -3562,7 +3562,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.16.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.16.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
