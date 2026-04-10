@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.15.0 (GUI)
+    Herramienta de administracion remota unificada v2.15.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.15.0
+    2.15.1
 #>
 
 [CmdletBinding()]
@@ -2533,7 +2533,7 @@ function Invoke-CorporateCleanup {
     if (-not (Confirm-Action (
         "Se ejecutara limpieza de caches y temporales corporate en '$ComputerName':`n`n" +
         "  Windows Temp, Temp de usuarios, Chrome/Edge cache,`n" +
-        "  Teams cache, SoftwareDistribution\Download, Papelera`n`n" +
+        "  Teams cache, Papelera`n`n" +
         "NO se borran documentos, descargas ni datos del usuario.`n`n" +
         "¿Continuar?"
     ) "Limpieza corporate - Confirmar")) {
@@ -2575,7 +2575,7 @@ function Invoke-CorporateCleanup {
             $p = 'C:\Windows\Temp'
             $b = Measure-FolderBytes $p
             Clear-DirContents $p
-            $freed = $b - (Measure-FolderBytes $p)
+            $freed = [Math]::Max([long]0, $b - (Measure-FolderBytes $p))
             $items += @{ Label='Windows Temp'; FreedBytes=$freed; Status='OK'; Details='' }
 
             # ── Temp de usuarios ──────────────────────────────────────────
@@ -2585,7 +2585,7 @@ function Invoke-CorporateCleanup {
                 if (Test-Path $tp) {
                     $b = Measure-FolderBytes $tp
                     Clear-DirContents $tp
-                    $utFreed += $b - (Measure-FolderBytes $tp)
+                    $utFreed += [Math]::Max([long]0, $b - (Measure-FolderBytes $tp))
                 }
             }
             $items += @{ Label='Temp usuarios'; FreedBytes=$utFreed; Status='OK'; Details='' }
@@ -2602,7 +2602,7 @@ function Invoke-CorporateCleanup {
                         if (Test-Path $brPath) {
                             $b = Measure-FolderBytes $brPath
                             Clear-DirContents $brPath
-                            $brFreed += $b - (Measure-FolderBytes $brPath)
+                            $brFreed += [Math]::Max([long]0, $b - (Measure-FolderBytes $brPath))
                         }
                     }
                 }
@@ -2623,30 +2623,12 @@ function Invoke-CorporateCleanup {
                         if (Test-Path $tp) {
                             $b = Measure-FolderBytes $tp
                             Clear-DirContents $tp
-                            $tmFreed += $b - (Measure-FolderBytes $tp)
+                            $tmFreed += [Math]::Max([long]0, $b - (Measure-FolderBytes $tp))
                         }
                     }
                 }
             }
             $items += @{ Label='Teams cache'; FreedBytes=$tmFreed; Status='OK'; Details='' }
-
-            # ── SoftwareDistribution\Download ─────────────────────────────
-            $sdPath = 'C:\Windows\SoftwareDistribution\Download'
-            if (Test-Path $sdPath) {
-                try {
-                    Stop-Service wuauserv -Force -ErrorAction Stop
-                    $b = Measure-FolderBytes $sdPath
-                    Clear-DirContents $sdPath
-                    $sdFreed = $b - (Measure-FolderBytes $sdPath)
-                    Start-Service wuauserv -ErrorAction SilentlyContinue
-                    $items += @{ Label='SoftwareDistrib.'; FreedBytes=$sdFreed; Status='OK'; Details='' }
-                } catch {
-                    Start-Service wuauserv -ErrorAction SilentlyContinue
-                    $items += @{ Label='SoftwareDistrib.'; FreedBytes=[long]0; Status='SKIP'; Details="wuauserv no detenible" }
-                }
-            } else {
-                $items += @{ Label='SoftwareDistrib.'; FreedBytes=[long]0; Status='SKIP'; Details='Ruta no existe' }
-            }
 
             # ── Papelera ──────────────────────────────────────────────────
             try {
@@ -3493,7 +3475,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.15.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.15.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
