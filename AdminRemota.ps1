@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.13.0 (GUI)
+    Herramienta de administracion remota unificada v2.14.0 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.13.0
+    2.14.0
 #>
 
 [CmdletBinding()]
@@ -1990,8 +1990,219 @@ function Show-NacRemediationForm {
 
 #endregion
 
-# ════════════════════════════════════════════════════════════════════
-# LAYOUT PRINCIPAL
+#region ═══════════════════════════════════════════════════════════
+# PERFILAZO - BACKUP Y BORRADO DE PERFIL DE USUARIO
+#═══════════════════════════════════════════════════════════════════
+
+function Invoke-Perfilazo {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    Write-Sep
+    Write-Info "Perfilazo en '$ComputerName'"
+    Write-Sep
+    Append-Output "" $script:White
+
+    # ── Datos de entrada ─────────────────────────────────────────────
+    $usuario = (Get-Input "Usuario del perfil a tratar:" "Perfilazo - Usuario" "").Trim()
+    if ([string]::IsNullOrWhiteSpace($usuario)) { Write-Warn "Cancelado."; return }
+
+    $destBase = (Get-Input "Ruta destino del backup:" "Perfilazo - Destino" "C:\Share").Trim()
+    if ([string]::IsNullOrWhiteSpace($destBase)) { Write-Warn "Cancelado."; return }
+
+    $rutaExtra = (Get-Input "Ruta extra opcional (vaciar si no aplica):" "Perfilazo - Extra" "").Trim()
+
+    # ── Verificar perfil ─────────────────────────────────────────────
+    $profilePath = "C:\Users\$usuario"
+    Write-Info "Verificando perfil: $profilePath"
+    $existe = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $profilePath -ScriptBlock {
+        param([string]$p); return (Test-Path $p)
+    }
+    if (-not $existe) {
+        Write-Fail "Perfil no encontrado: $profilePath en '$ComputerName'."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+    Write-Ok "Perfil encontrado: $profilePath"
+    Append-Output "" $script:White
+
+    # ── Calcular destino ─────────────────────────────────────────────
+    $fecha   = (Get-Date).ToString('yyyy-MM-dd_HHmm')
+    $destDir = "$destBase\${ComputerName}_${usuario}_$fecha"
+    Write-Info "Destino: $destDir"
+    Append-Output "" $script:White
+
+    # ── Copia remota ─────────────────────────────────────────────────
+    Write-Info "Copiando perfil..."
+    Set-Status "Copiando perfil de '$usuario'..." ([System.Drawing.Color]::Yellow)
+    $script:outputBox.Update()
+
+    $copyResult = Invoke-LocalOrRemote -ComputerName $ComputerName `
+        -ArgumentList $profilePath, $destDir, $rutaExtra `
+        -OperationTimeoutMs 600000 `
+        -ScriptBlock {
+            param([string]$src, [string]$dst, [string]$extra)
+
+            $folderDefs = @(
+                @{ Name='Desktop';   Src="$src\Desktop"   },
+                @{ Name='Downloads'; Src="$src\Downloads" },
+                @{ Name='Documents'; Src="$src\Documents" },
+                @{ Name='Favorites'; Src="$src\Favorites" },
+                @{ Name='Pictures';  Src="$src\Pictures"  }
+            )
+            $fileDefs = @(
+                @{ Name='Chrome_Bookmarks'; Src="$src\AppData\Local\Google\Chrome\User Data\Default\Bookmarks"; Sub='BrowserBookmarks\Chrome' },
+                @{ Name='Edge_Bookmarks';   Src="$src\AppData\Local\Microsoft\Edge\User Data\Default\Bookmarks";   Sub='BrowserBookmarks\Edge' }
+            )
+
+            $results = @()
+
+            # Carpetas de perfil via robocopy
+            foreach ($f in $folderDefs) {
+                if (-not (Test-Path $f.Src)) {
+                    $results += @{ Item=$f.Name; Status='SKIP'; Details='No existe' }; continue
+                }
+                $null = robocopy $f.Src "$dst\$($f.Name)" /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
+                $ec = $LASTEXITCODE
+                $results += @{ Item=$f.Name; Status=(if ($ec -ge 8) {'ERROR'} else {'OK'}); Details="rc=$ec" }
+            }
+
+            # Bookmarks via Copy-Item
+            foreach ($fi in $fileDefs) {
+                if (-not (Test-Path $fi.Src)) {
+                    $results += @{ Item=$fi.Name; Status='SKIP'; Details='No existe' }; continue
+                }
+                $dstSub = "$dst\$($fi.Sub)"
+                if (-not (Test-Path $dstSub)) { New-Item $dstSub -ItemType Directory -Force | Out-Null }
+                try {
+                    Copy-Item $fi.Src $dstSub -Force -ErrorAction Stop
+                    $results += @{ Item=$fi.Name; Status='OK'; Details='Copiado' }
+                } catch {
+                    $results += @{ Item=$fi.Name; Status='ERROR'; Details=$_.Exception.Message }
+                }
+            }
+
+            # Ruta extra opcional
+            if (-not [string]::IsNullOrWhiteSpace($extra)) {
+                if (-not (Test-Path $extra)) {
+                    $results += @{ Item='RutaExtra'; Status='SKIP'; Details="No existe: $extra" }
+                } elseif ((Get-Item $extra).PSIsContainer) {
+                    $null = robocopy $extra "$dst\RutaExtra" /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
+                    $ec = $LASTEXITCODE
+                    $results += @{ Item='RutaExtra'; Status=(if ($ec -ge 8) {'ERROR'} else {'OK'}); Details="rc=$ec" }
+                } else {
+                    $dstEx = "$dst\RutaExtra"
+                    if (-not (Test-Path $dstEx)) { New-Item $dstEx -ItemType Directory -Force | Out-Null }
+                    try {
+                        Copy-Item $extra $dstEx -Force -ErrorAction Stop
+                        $results += @{ Item='RutaExtra'; Status='OK'; Details='Copiado' }
+                    } catch {
+                        $results += @{ Item='RutaExtra'; Status='ERROR'; Details=$_.Exception.Message }
+                    }
+                }
+            }
+
+            return @{ Results=$results; BackupRoot=$dst }
+        }
+
+    if (-not $copyResult) {
+        Write-Fail "Sin respuesta durante la copia. Abortando."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    # ── Mostrar resultados de copia ───────────────────────────────────
+    Write-Info "Resultado de copia:"
+    $nOk = 0; $nErr = 0; $nSkip = 0
+    foreach ($r in $copyResult.Results) {
+        $color = switch ($r.Status) {
+            'OK'    { [System.Drawing.Color]::LightGreen }
+            'SKIP'  { [System.Drawing.Color]::Gray       }
+            default { [System.Drawing.Color]::Tomato     }
+        }
+        Append-Output ("  [{0,-6}] {1,-22}  {2}" -f $r.Status, $r.Item, $r.Details) $color
+        switch ($r.Status) { 'OK' { $nOk++ } 'ERROR' { $nErr++ } default { $nSkip++ } }
+    }
+    Append-Output "" $script:White
+    Write-Info "Resumen: Copiados=$nOk  Omitidos=$nSkip  Errores=$nErr"
+    Append-Output "" $script:White
+
+    # ── Validar backup ────────────────────────────────────────────────
+    Write-Info "Validando backup..."
+    if ($nOk -eq 0) {
+        Write-Fail "No se copio ningun elemento. Perfil NO borrado."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    $backupRoot = $copyResult.BackupRoot
+    $validated = Invoke-LocalOrRemote -ComputerName $ComputerName `
+        -ArgumentList $backupRoot -ScriptBlock {
+            param([string]$root)
+            if (-not (Test-Path $root)) { return $false }
+            $firstFile = Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue |
+                         Select-Object -First 1
+            return ($null -ne $firstFile)
+        }
+
+    if (-not $validated) {
+        Write-Fail "Backup no verificado: carpeta vacia o inaccesible. Perfil NO borrado."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+    Write-Ok "Backup verificado: $backupRoot"
+    if ($nErr -gt 0) {
+        Write-Warn "$nErr elemento(s) con error en la copia. Revisar antes de proceder."
+    }
+    Append-Output "" $script:White
+
+    # ── Confirmar borrado ─────────────────────────────────────────────
+    $errWarn = if ($nErr -gt 0) { "`n`n  ATENCION: $nErr elemento(s) con error." } else { "" }
+    if (-not (Confirm-Action (
+        "Backup validado en:`n  $backupRoot`n`n" +
+        "  Copiados=$nOk  Omitidos=$nSkip  Errores=$nErr$errWarn`n`n" +
+        "Perfil a eliminar:`n  $profilePath en '$ComputerName'`n`n" +
+        "¿Borrar el perfil de '$usuario'?"
+    ) "Perfilazo - Confirmar borrado")) {
+        Write-Info "Perfil NO borrado (cancelado)."
+        Write-Sep; Append-Output "" $script:White; return
+    }
+
+    # ── Borrado de perfil via Win32_UserProfile ───────────────────────
+    Write-Info "Borrando perfil via Win32_UserProfile..."
+    Set-Status "Borrando perfil '$usuario'..." ([System.Drawing.Color]::Orange)
+
+    $delResult = Invoke-LocalOrRemote -ComputerName $ComputerName `
+        -ArgumentList $profilePath -ScriptBlock {
+            param([string]$localPath)
+            try {
+                $wqlPath = $localPath -replace '\\', '\\\\'
+                $prof = Get-CimInstance -ClassName Win32_UserProfile `
+                            -Filter "LocalPath='$wqlPath'" -ErrorAction Stop
+                if (-not $prof) {
+                    return @{ Status='ERROR'; Details="Win32_UserProfile no encontrado para '$localPath'." }
+                }
+                if ($prof.Loaded) {
+                    return @{ Status='WARN'; Details='Sesion activa detectada. El perfil NO puede borrarse mientras esta cargado.' }
+                }
+                Remove-CimInstance -InputObject $prof -ErrorAction Stop
+                return @{ Status='OK'; Details='Perfil eliminado correctamente.' }
+            } catch {
+                return @{ Status='ERROR'; Details=$_.Exception.Message }
+            }
+        }
+
+    if (-not $delResult) {
+        Write-Fail "Sin respuesta al borrar el perfil."
+    } else {
+        switch ($delResult.Status) {
+            'OK'    { Write-Ok   "Perfil de '$usuario' eliminado. $($delResult.Details)" }
+            'WARN'  { Write-Warn "Perfil NO borrado: $($delResult.Details)" }
+            'ERROR' { Write-Fail "Error al borrar: $($delResult.Details)" }
+        }
+    }
+
+    Write-Sep
+    Append-Output "" $script:White
+}
+
+#endregion
+
 #
 # Zona superior (topPanel)
 #   Se usa un TableLayoutPanel (tlpTop, 1 col × 7 filas) para que cada
@@ -2195,7 +2406,8 @@ $cboMaintenance.Items.AddRange(@(
     "Ciclos SCCM",
     "SCCM Repair / Reinstall",
     "Reparacion sistema (DISM + SFC)",
-    "ChkDsk /r"
+    "ChkDsk /r",
+    "Perfilazo"
 ))
 $cboMaintenance.SelectedIndex = 0
 $pActions.Controls.Add($cboMaintenance)
@@ -2704,6 +2916,11 @@ $btnExecute.Add_Click({
                 -Action    { Invoke-RemoteChkdsk -ComputerName $target }
             Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
         }
+        "Perfilazo" {
+            Invoke-ActionButton -ComputerName $target -UseCancel $false `
+                -StatusMsg "Perfilazo en '$target'..." `
+                -Action    { Invoke-Perfilazo -ComputerName $target }
+        }
     }
 })
 
@@ -2769,7 +2986,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.13.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.14.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
