@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.14.0 (GUI)
+    Herramienta de administracion remota unificada v2.14.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.14.0
+    2.14.1
 #>
 
 [CmdletBinding()]
@@ -1995,7 +1995,7 @@ function Show-NacRemediationForm {
 #═══════════════════════════════════════════════════════════════════
 
 # Muestra un selector modal con los perfiles obtenidos de Win32_UserProfile.
-# Devuelve el Name (carpeta) del perfil elegido, o $null si se cancela.
+# Devuelve el LocalPath real del perfil elegido, o $null si se cancela.
 function Show-ProfilePicker {
     param(
         [Parameter(Mandatory)][object[]]$Profiles,
@@ -2048,7 +2048,7 @@ function Show-ProfilePicker {
     $pf.Dispose()
 
     if ($dlgResult -ne [System.Windows.Forms.DialogResult]::OK -or $selIdx -lt 0) { return $null }
-    return $Profiles[$selIdx].Name
+    return $Profiles[$selIdx].LocalPath
 }
 
 function Invoke-Perfilazo {
@@ -2092,9 +2092,10 @@ function Invoke-Perfilazo {
     Append-Output "" $script:White
 
     # ── Seleccionar perfil ───────────────────────────────────────────
-    $usuario = Show-ProfilePicker -Profiles @($perfiles) `
-                   -Title "Perfilazo - '$ComputerName'"
-    if (-not $usuario) { Write-Warn "Cancelado."; return }
+    $profilePath = Show-ProfilePicker -Profiles @($perfiles) `
+                       -Title "Perfilazo - '$ComputerName'"
+    if (-not $profilePath) { Write-Warn "Cancelado."; return }
+    $usuario = Split-Path $profilePath -Leaf   # solo para mensajes
 
     $destBase = (Get-Input "Ruta destino del backup:" "Perfilazo - Destino" "C:\Share").Trim()
     if ([string]::IsNullOrWhiteSpace($destBase)) { Write-Warn "Cancelado."; return }
@@ -2102,7 +2103,6 @@ function Invoke-Perfilazo {
     $rutaExtra = (Get-Input "Ruta extra opcional (vaciar si no aplica):" "Perfilazo - Extra" "").Trim()
 
     # ── Verificar perfil ─────────────────────────────────────────────
-    $profilePath = "C:\Users\$usuario"
     Write-Info "Verificando perfil: $profilePath"
     $existe = Invoke-LocalOrRemote -ComputerName $ComputerName -ArgumentList $profilePath -ScriptBlock {
         param([string]$p); return (Test-Path $p)
@@ -2263,9 +2263,8 @@ function Invoke-Perfilazo {
         -ArgumentList $profilePath -ScriptBlock {
             param([string]$localPath)
             try {
-                $wqlPath = $localPath -replace '\\', '\\\\'
-                $prof = Get-CimInstance -ClassName Win32_UserProfile `
-                            -Filter "LocalPath='$wqlPath'" -ErrorAction Stop
+                $prof = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+                            Where-Object { $_.LocalPath -eq $localPath }
                 if (-not $prof) {
                     return @{ Status='ERROR'; Details="Win32_UserProfile no encontrado para '$localPath'." }
                 }
@@ -3078,7 +3077,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.14.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.14.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
