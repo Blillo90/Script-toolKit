@@ -2062,7 +2062,8 @@ function Invoke-Perfilazo {
                 }
                 $null = robocopy $f.Src "$dst\$($f.Name)" /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
                 $ec = $LASTEXITCODE
-                $results += @{ Item=$f.Name; Status=(if ($ec -ge 8) {'ERROR'} else {'OK'}); Details="rc=$ec" }
+                $st = if ($ec -ge 8) { 'ERROR' } else { 'OK' }
+                $results += @{ Item=$f.Name; Status=$st; Details="rc=$ec" }
             }
 
             # Bookmarks via Copy-Item
@@ -2087,7 +2088,8 @@ function Invoke-Perfilazo {
                 } elseif ((Get-Item $extra).PSIsContainer) {
                     $null = robocopy $extra "$dst\RutaExtra" /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
                     $ec = $LASTEXITCODE
-                    $results += @{ Item='RutaExtra'; Status=(if ($ec -ge 8) {'ERROR'} else {'OK'}); Details="rc=$ec" }
+                    $st = if ($ec -ge 8) { 'ERROR' } else { 'OK' }
+                    $results += @{ Item='RutaExtra'; Status=$st; Details="rc=$ec" }
                 } else {
                     $dstEx = "$dst\RutaExtra"
                     if (-not (Test-Path $dstEx)) { New-Item $dstEx -ItemType Directory -Force | Out-Null }
