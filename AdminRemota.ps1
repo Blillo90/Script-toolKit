@@ -1994,6 +1994,63 @@ function Show-NacRemediationForm {
 # PERFILAZO - BACKUP Y BORRADO DE PERFIL DE USUARIO
 #═══════════════════════════════════════════════════════════════════
 
+# Muestra un selector modal con los perfiles obtenidos de Win32_UserProfile.
+# Devuelve el Name (carpeta) del perfil elegido, o $null si se cancela.
+function Show-ProfilePicker {
+    param(
+        [Parameter(Mandatory)][object[]]$Profiles,
+        [string]$Title = "Seleccionar perfil"
+    )
+
+    $pf = New-Object System.Windows.Forms.Form
+    $pf.Text            = $Title
+    $pf.Size            = New-Object System.Drawing.Size(520, 148)
+    $pf.StartPosition   = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $pf.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $pf.MaximizeBox     = $false
+    $pf.MinimizeBox     = $false
+
+    $lbl          = New-Object System.Windows.Forms.Label
+    $lbl.Text     = "Selecciona el perfil a tratar:"
+    $lbl.Location = New-Object System.Drawing.Point(12, 12)
+    $lbl.Size     = New-Object System.Drawing.Size(480, 18)
+    $pf.Controls.Add($lbl)
+
+    $cbo              = New-Object System.Windows.Forms.ComboBox
+    $cbo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $cbo.Location     = New-Object System.Drawing.Point(12, 34)
+    $cbo.Size         = New-Object System.Drawing.Size(480, 24)
+    foreach ($p in $Profiles) {
+        $loadStr = if ($p.Loaded) { 'Loaded=True ' } else { 'Loaded=False' }
+        $null = $cbo.Items.Add(("{0,-22}  |  {1}  |  {2}" -f $p.Name, $loadStr, $p.LocalPath))
+    }
+    $cbo.SelectedIndex = 0
+    $pf.Controls.Add($cbo)
+
+    $btnOk            = New-Object System.Windows.Forms.Button
+    $btnOk.Text       = "Aceptar"
+    $btnOk.Location   = New-Object System.Drawing.Point(304, 72)
+    $btnOk.Size       = New-Object System.Drawing.Size(88, 28)
+    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $pf.AcceptButton  = $btnOk
+    $pf.Controls.Add($btnOk)
+
+    $btnCnl           = New-Object System.Windows.Forms.Button
+    $btnCnl.Text      = "Cancelar"
+    $btnCnl.Location  = New-Object System.Drawing.Point(400, 72)
+    $btnCnl.Size      = New-Object System.Drawing.Size(92, 28)
+    $btnCnl.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $pf.CancelButton  = $btnCnl
+    $pf.Controls.Add($btnCnl)
+
+    $dlgResult = $pf.ShowDialog()
+    $selIdx    = $cbo.SelectedIndex
+    $pf.Dispose()
+
+    if ($dlgResult -ne [System.Windows.Forms.DialogResult]::OK -or $selIdx -lt 0) { return $null }
+    return $Profiles[$selIdx].Name
+}
+
 function Invoke-Perfilazo {
     param([Parameter(Mandatory)][string]$ComputerName)
 
@@ -2030,12 +2087,14 @@ function Invoke-Perfilazo {
         }
     } else {
         Write-Warn "No se pudieron obtener perfiles de '$ComputerName' (o no hay perfiles locales)."
+        Write-Sep; Append-Output "" $script:White; return
     }
     Append-Output "" $script:White
 
-    # ── Datos de entrada ─────────────────────────────────────────────
-    $usuario = (Get-Input "Usuario del perfil a tratar:" "Perfilazo - Usuario" "").Trim()
-    if ([string]::IsNullOrWhiteSpace($usuario)) { Write-Warn "Cancelado."; return }
+    # ── Seleccionar perfil ───────────────────────────────────────────
+    $usuario = Show-ProfilePicker -Profiles @($perfiles) `
+                   -Title "Perfilazo - '$ComputerName'"
+    if (-not $usuario) { Write-Warn "Cancelado."; return }
 
     $destBase = (Get-Input "Ruta destino del backup:" "Perfilazo - Destino" "C:\Share").Trim()
     if ([string]::IsNullOrWhiteSpace($destBase)) { Write-Warn "Cancelado."; return }
