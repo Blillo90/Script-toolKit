@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.16.2 (GUI)
+    Herramienta de administracion remota unificada v2.16.3 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.16.2
+    2.16.3
 #>
 
 [CmdletBinding()]
@@ -2132,8 +2132,24 @@ function Invoke-Perfilazo {
             }
         }
 
+        Write-Warn "[SIN BACKUP] Modo peligroso activado."
+        Write-Info "Buscando backup previo en: $destBase"
+        if ($prevBackup) {
+            Write-Ok "[SIN BACKUP] Backup previo encontrado:"
+            Append-Output ("  Ruta:   " + $prevBackup.FullName)                                   ([System.Drawing.Color]::LightGreen)
+            Append-Output ("  Nombre: " + $prevBackup.Name)                                       ([System.Drawing.Color]::LightGreen)
+            Append-Output ("  Fecha:  " + $prevBackup.LastWriteTime.ToString('yyyy-MM-dd HH:mm')) ([System.Drawing.Color]::LightGreen)
+            Append-Output "" $script:White
+            Write-Warn "[SIN BACKUP] Este backup puede ser antiguo y NO refleja el estado actual del perfil."
+            Write-Warn "[SIN BACKUP] Borrar sin backup nuevo sigue siendo arriesgado."
+        } else {
+            Write-Fail "[SIN BACKUP] No se encontro ningun backup previo de '$ComputerName' en la share."
+            Write-Warn "[SIN BACKUP] Borrar sin backup es extremadamente peligroso (sin recuperacion posible)."
+        }
+        Append-Output "" $script:White
+
         $confMsg = if ($prevBackup) {
-            "Backup previo: $($prevBackup.FullName)`n  Fecha: $($prevBackup.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))`n`n  ATENCION: puede estar desactualizado."
+            "Backup previo encontrado:`n  $($prevBackup.FullName)`n  Fecha: $($prevBackup.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))`n`n  ATENCION: Puede estar desactualizado.`n  No sustituye hacer un backup nuevo ahora."
         } else {
             "NO se encontro ningun backup previo para '$ComputerName'.`n  RIESGO MAXIMO: sin posibilidad de recuperacion."
         }
@@ -2144,7 +2160,7 @@ function Invoke-Perfilazo {
             Write-Info "Perfil NO borrado (cancelado)."; Write-Sep; Append-Output "" $script:White; return
         }
 
-        Write-Warn "Borrando perfil '$usuario' SIN backup nuevo..."
+        Write-Warn "[SIN BACKUP] Borrando perfil '$usuario' SIN backup nuevo..."
         Set-Status "Borrando perfil '$usuario' [SIN BACKUP]..." ([System.Drawing.Color]::Orange)
         $delResult = Invoke-LocalOrRemote -ComputerName $ComputerName `
             -ArgumentList $profilePath -ScriptBlock {
@@ -2158,16 +2174,20 @@ function Invoke-Perfilazo {
                     return @{ Status='OK'; Details='Perfil eliminado correctamente.' }
                 } catch { return @{ Status='ERROR'; Details=$_.Exception.Message } }
             }
-        if (-not $delResult) { Write-Fail "Sin respuesta al borrar el perfil." }
+        if (-not $delResult) { Write-Fail "[SIN BACKUP] Sin respuesta al borrar el perfil." }
         else {
             switch ($delResult.Status) {
-                'OK'    { Write-Ok   "Perfil de '$usuario' eliminado. $($delResult.Details)" }
-                'WARN'  { Write-Warn "Perfil NO borrado: $($delResult.Details)" }
-                'ERROR' { Write-Fail "Error al borrar: $($delResult.Details)" }
+                'OK'    { Write-Ok   "[SIN BACKUP] Perfil de '$usuario' eliminado. $($delResult.Details)" }
+                'WARN'  { Write-Warn "[SIN BACKUP] Perfil NO borrado: $($delResult.Details)" }
+                'ERROR' { Write-Fail "[SIN BACKUP] Error al borrar: $($delResult.Details)" }
             }
         }
         Write-Sep; Append-Output "" $script:White; return
     }
+
+    # ── MODO SEGURO: backup nuevo + validacion + borrado ─────────────
+    Write-Info "[CON BACKUP] Modo seguro activado."
+    Append-Output "" $script:White
 
     # ── Verificar perfil ─────────────────────────────────────────────
     Write-Info "Verificando perfil: $profilePath"
@@ -3628,7 +3648,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.16.2" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.16.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
