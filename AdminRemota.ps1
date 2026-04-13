@@ -2098,10 +2098,76 @@ function Invoke-Perfilazo {
     if (-not $profilePath) { Write-Warn "Cancelado."; return }
     $usuario = Split-Path $profilePath -Leaf   # solo para mensajes
 
-    $destBase = (Get-Input "Ruta destino del backup:" "Perfilazo - Destino" "C:\Share").Trim()
+    $destBase = (Get-Input "Ruta base del share de backups:" "Perfilazo - Destino" "C:\Share").Trim()
     if ([string]::IsNullOrWhiteSpace($destBase)) { Write-Warn "Cancelado."; return }
 
-    $rutaExtra = (Get-Input "Ruta extra opcional (vaciar si no aplica):" "Perfilazo - Extra" "").Trim()
+    # ── Elegir modo: backup nuevo (seguro) o sin backup (peligroso) ──
+    $modeChoice = [System.Windows.Forms.MessageBox]::Show(
+        "Crear nuevo backup antes de borrar el perfil?`n`n" +
+        "SI  = Crear backup completo (recomendado)`n" +
+        "NO  = Borrar SIN nuevo backup (PELIGROSO)",
+        "Perfilazo - Modo de operacion",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    $skipBackup = ($modeChoice -eq [System.Windows.Forms.DialogResult]::No)
+
+    $rutaExtra = if (-not $skipBackup) {
+        (Get-Input "Ruta extra opcional (vaciar si no aplica):" "Perfilazo - Extra" "").Trim()
+    } else { "" }
+
+    # ── MODO PELIGROSO: verificar backup previo y confirmar borrado ───
+    if ($skipBackup) {
+        $prevBackup = $null
+        if (Test-Path $destBase) {
+            # Intento 1: coincidencia exacta equipo + usuario
+            $prevBackup = Get-ChildItem -Path $destBase -Directory -ErrorAction SilentlyContinue |
+                          Where-Object { $_.Name -like "${ComputerName}_${usuario}_*" } |
+                          Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            # Intento 2: solo por equipo si no hay coincidencia exacta
+            if (-not $prevBackup) {
+                $prevBackup = Get-ChildItem -Path $destBase -Directory -ErrorAction SilentlyContinue |
+                              Where-Object { $_.Name -like "${ComputerName}_*" } |
+                              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            }
+        }
+
+        $confMsg = if ($prevBackup) {
+            "Backup previo: $($prevBackup.FullName)`n  Fecha: $($prevBackup.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))`n`n  ATENCION: puede estar desactualizado."
+        } else {
+            "NO se encontro ningun backup previo para '$ComputerName'.`n  RIESGO MAXIMO: sin posibilidad de recuperacion."
+        }
+
+        if (-not (Confirm-Action (
+            "!!! BORRADO SIN BACKUP !!!`n`n$confMsg`n`nPerfil a eliminar:`n  $profilePath en '$ComputerName'`n`nConfirmas el borrado SIN nuevo backup de '$usuario'?"
+        ) "Perfilazo - BORRADO SIN BACKUP")) {
+            Write-Info "Perfil NO borrado (cancelado)."; Write-Sep; Append-Output "" $script:White; return
+        }
+
+        Write-Warn "Borrando perfil '$usuario' SIN backup nuevo..."
+        Set-Status "Borrando perfil '$usuario' [SIN BACKUP]..." ([System.Drawing.Color]::Orange)
+        $delResult = Invoke-LocalOrRemote -ComputerName $ComputerName `
+            -ArgumentList $profilePath -ScriptBlock {
+                param([string]$localPath)
+                try {
+                    $prof = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+                                Where-Object { $_.LocalPath -eq $localPath }
+                    if (-not $prof)   { return @{ Status='ERROR'; Details="Win32_UserProfile no encontrado para '$localPath'." } }
+                    if ($prof.Loaded) { return @{ Status='WARN';  Details='Sesion activa. El perfil NO puede borrarse mientras esta cargado.' } }
+                    Remove-CimInstance -InputObject $prof -ErrorAction Stop
+                    return @{ Status='OK'; Details='Perfil eliminado correctamente.' }
+                } catch { return @{ Status='ERROR'; Details=$_.Exception.Message } }
+            }
+        if (-not $delResult) { Write-Fail "Sin respuesta al borrar el perfil." }
+        else {
+            switch ($delResult.Status) {
+                'OK'    { Write-Ok   "Perfil de '$usuario' eliminado. $($delResult.Details)" }
+                'WARN'  { Write-Warn "Perfil NO borrado: $($delResult.Details)" }
+                'ERROR' { Write-Fail "Error al borrar: $($delResult.Details)" }
+            }
+        }
+        Write-Sep; Append-Output "" $script:White; return
+    }
 
     # ── Verificar perfil ─────────────────────────────────────────────
     Write-Info "Verificando perfil: $profilePath"
