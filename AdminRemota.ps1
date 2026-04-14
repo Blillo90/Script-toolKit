@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.16.3 (GUI)
+    Herramienta de administracion remota unificada v2.16.4 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.16.3
+    2.16.4
 #>
 
 [CmdletBinding()]
@@ -2258,6 +2258,21 @@ function Invoke-Perfilazo {
                 }
             }
 
+            # Historial y configuracion de Cisco Jabber
+            $jabberDefs = @(
+                @{ Name='Jabber_History'; Src="$src\AppData\Local\Cisco\Unified Communications\Jabber\CSF\History"; Dst='Jabber\History' },
+                @{ Name='Jabber_Config';  Src="$src\AppData\Roaming\Cisco\Unified Communications\Jabber";           Dst='Jabber\Config'  }
+            )
+            foreach ($j in $jabberDefs) {
+                if (-not (Test-Path $j.Src)) {
+                    $results += @{ Item=$j.Name; Status='WARN'; Details='Jabber no instalado en este perfil' }; continue
+                }
+                $null = robocopy $j.Src "$dst\$($j.Dst)" /E /COPY:DAT /R:1 /W:1 /NP /NJH /NJS /NS /NC /NFL /NDL 2>&1
+                $ec = $LASTEXITCODE
+                $st = if ($ec -ge 8) { 'ERROR' } else { 'OK' }
+                $results += @{ Item=$j.Name; Status=$st; Details="rc=$ec" }
+            }
+
             # Ruta extra opcional
             if (-not [string]::IsNullOrWhiteSpace($extra)) {
                 if (-not (Test-Path $extra)) {
@@ -2293,8 +2308,9 @@ function Invoke-Perfilazo {
     foreach ($r in $copyResult.Results) {
         $color = switch ($r.Status) {
             'OK'    { [System.Drawing.Color]::LightGreen }
-            'SKIP'  { [System.Drawing.Color]::Gray       }
-            default { [System.Drawing.Color]::Tomato     }
+            'WARN'  { [System.Drawing.Color]::Yellow      }
+            'SKIP'  { [System.Drawing.Color]::Gray        }
+            default { [System.Drawing.Color]::Tomato      }
         }
         Append-Output ("  [{0,-6}] {1,-22}  {2}" -f $r.Status, $r.Item, $r.Details) $color
         switch ($r.Status) { 'OK' { $nOk++ } 'ERROR' { $nErr++ } default { $nSkip++ } }
@@ -3648,7 +3664,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.16.3" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.16.4" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
