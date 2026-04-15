@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Herramienta de administracion remota unificada v2.17.0 (GUI)
+    Herramienta de administracion remota unificada v2.17.1 (GUI)
 .DESCRIPTION
     Interfaz grafica con opciones de administracion remota:
       1. Comprobar Masterizacion de un equipo
@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.17.0
+    2.17.1
 #>
 
 [CmdletBinding()]
@@ -3039,8 +3039,9 @@ $gSistema  = New-GroupPanel "Sistema" 392 180
 $bw3       = 170
 $btnRepair  = New-FlatButton "  DISM + SFC"          4 22 $bw3 24 ([System.Drawing.Color]::FromArgb(130, 80, 0))
 $btnChkdsk  = New-FlatButton "  ChkDsk /r"           4 50 $bw3 24 ([System.Drawing.Color]::FromArgb(150, 60, 0))
-$btnCleanup = New-FlatButton "  Limpieza temporales" 4 78 $bw3 24 ([System.Drawing.Color]::FromArgb(0, 100, 80))
-foreach ($b in @($btnRepair, $btnChkdsk, $btnCleanup)) { $gSistema.Controls.Add($b) }
+$btnCleanup  = New-FlatButton "  Limpieza temporales" 4 78  $bw3 24 ([System.Drawing.Color]::FromArgb(0, 100, 80))
+$btnRobocopy = New-FlatButton "  Copia remota"        4 106 $bw3 24 ([System.Drawing.Color]::FromArgb(0, 90, 130))
+foreach ($b in @($btnRepair, $btnChkdsk, $btnCleanup, $btnRobocopy)) { $gSistema.Controls.Add($b) }
 
 # ── G4: Usuario (x=576, w=170) ───────────────────────────────────
 $gUsuario         = New-GroupPanel "Usuario" 576 170
@@ -3060,58 +3061,6 @@ foreach ($b in @($btnRestart, $btnUsb)) { $gSensibles.Controls.Add($b) }
 foreach ($g in @($gDiag, $gSccm, $gSistema, $gUsuario, $gSensibles)) {
     $actionPanel.Controls.Add($g)
 }
-
-# ── Panel de copia remota (Robocopy) ─────────────────────────────
-$roboPanel           = New-Object System.Windows.Forms.Panel
-$roboPanel.Dock      = "Top"
-$roboPanel.Height    = 42
-$roboPanel.BackColor = [System.Drawing.Color]::FromArgb(36, 36, 40)
-$form.Controls.Add($roboPanel)
-
-$lblRoboTitle           = New-Object System.Windows.Forms.Label
-$lblRoboTitle.Text      = "COPIA REMOTA"
-$lblRoboTitle.ForeColor = [System.Drawing.Color]::FromArgb(0, 190, 255)
-$lblRoboTitle.Font      = $fontSmall
-$lblRoboTitle.AutoSize  = $true
-$lblRoboTitle.Location  = New-Object System.Drawing.Point(6, 13)
-$roboPanel.Controls.Add($lblRoboTitle)
-
-$lblRoboSrc           = New-Object System.Windows.Forms.Label
-$lblRoboSrc.Text      = "Origen:"
-$lblRoboSrc.ForeColor = $silver
-$lblRoboSrc.Font      = $fontSmall
-$lblRoboSrc.AutoSize  = $true
-$lblRoboSrc.Location  = New-Object System.Drawing.Point(122, 14)
-$roboPanel.Controls.Add($lblRoboSrc)
-
-$txtRoboSrc             = New-Object System.Windows.Forms.TextBox
-$txtRoboSrc.Location    = New-Object System.Drawing.Point(172, 9)
-$txtRoboSrc.Size        = New-Object System.Drawing.Size(240, 24)
-$txtRoboSrc.BackColor   = [System.Drawing.Color]::FromArgb(55, 55, 58)
-$txtRoboSrc.ForeColor   = $white
-$txtRoboSrc.BorderStyle = "FixedSingle"
-$txtRoboSrc.Font        = $fontUI
-$roboPanel.Controls.Add($txtRoboSrc)
-
-$lblRoboDst           = New-Object System.Windows.Forms.Label
-$lblRoboDst.Text      = "Destino:"
-$lblRoboDst.ForeColor = $silver
-$lblRoboDst.Font      = $fontSmall
-$lblRoboDst.AutoSize  = $true
-$lblRoboDst.Location  = New-Object System.Drawing.Point(420, 14)
-$roboPanel.Controls.Add($lblRoboDst)
-
-$txtRoboDst             = New-Object System.Windows.Forms.TextBox
-$txtRoboDst.Location    = New-Object System.Drawing.Point(472, 9)
-$txtRoboDst.Size        = New-Object System.Drawing.Size(240, 24)
-$txtRoboDst.BackColor   = [System.Drawing.Color]::FromArgb(55, 55, 58)
-$txtRoboDst.ForeColor   = $white
-$txtRoboDst.BorderStyle = "FixedSingle"
-$txtRoboDst.Font        = $fontUI
-$roboPanel.Controls.Add($txtRoboDst)
-
-$btnRobocopy = New-FlatButton "  Copiar" 720 7 90 28 ([System.Drawing.Color]::FromArgb(0, 100, 80))
-$roboPanel.Controls.Add($btnRobocopy)
 
 # ── Area de salida ────────────────────────────────────────────────
 $script:outputBox             = New-Object System.Windows.Forms.RichTextBox
@@ -3453,6 +3402,146 @@ function Invoke-ActionButton {
     }
 }
 
+function Show-RobocopyForm {
+    $computer = $txtEquipo.Text.Trim()
+
+    $dlg                 = New-Object System.Windows.Forms.Form
+    $dlg.Text            = "Copia Remota – Robocopy"
+    $dlg.Size            = New-Object System.Drawing.Size(530, 320)
+    $dlg.StartPosition   = "CenterParent"
+    $dlg.BackColor       = $bgPanel
+    $dlg.ForeColor       = $script:White
+    $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $dlg.MaximizeBox     = $false
+    $dlg.MinimizeBox     = $false
+
+    $lblComp           = New-Object System.Windows.Forms.Label
+    $lblComp.Text      = if ($computer) { "Equipo: $computer" } else { "ATENCION: ningun equipo seleccionado" }
+    $lblComp.ForeColor = if ($computer) { [System.Drawing.Color]::FromArgb(0, 190, 255) } else { [System.Drawing.Color]::Tomato }
+    $lblComp.Font      = $fontSmall
+    $lblComp.AutoSize  = $true
+    $lblComp.Location  = New-Object System.Drawing.Point(12, 12)
+    $dlg.Controls.Add($lblComp)
+
+    $lblSrc           = New-Object System.Windows.Forms.Label
+    $lblSrc.Text      = "Origen:"
+    $lblSrc.ForeColor = $script:Silver
+    $lblSrc.Font      = $fontSmall
+    $lblSrc.AutoSize  = $true
+    $lblSrc.Location  = New-Object System.Drawing.Point(12, 50)
+    $dlg.Controls.Add($lblSrc)
+
+    $txtSrc             = New-Object System.Windows.Forms.TextBox
+    $txtSrc.Location    = New-Object System.Drawing.Point(70, 46)
+    $txtSrc.Size        = New-Object System.Drawing.Size(430, 24)
+    $txtSrc.BackColor   = [System.Drawing.Color]::FromArgb(55, 55, 58)
+    $txtSrc.ForeColor   = $script:White
+    $txtSrc.BorderStyle = "FixedSingle"
+    $txtSrc.Font        = $fontUI
+    $dlg.Controls.Add($txtSrc)
+
+    $lblDst           = New-Object System.Windows.Forms.Label
+    $lblDst.Text      = "Destino:"
+    $lblDst.ForeColor = $script:Silver
+    $lblDst.Font      = $fontSmall
+    $lblDst.AutoSize  = $true
+    $lblDst.Location  = New-Object System.Drawing.Point(12, 84)
+    $dlg.Controls.Add($lblDst)
+
+    $txtDst             = New-Object System.Windows.Forms.TextBox
+    $txtDst.Location    = New-Object System.Drawing.Point(70, 80)
+    $txtDst.Size        = New-Object System.Drawing.Size(430, 24)
+    $txtDst.BackColor   = [System.Drawing.Color]::FromArgb(55, 55, 58)
+    $txtDst.ForeColor   = $script:White
+    $txtDst.BorderStyle = "FixedSingle"
+    $txtDst.Font        = $fontUI
+    $dlg.Controls.Add($txtDst)
+
+    $txtLog             = New-Object System.Windows.Forms.RichTextBox
+    $txtLog.Location    = New-Object System.Drawing.Point(12, 116)
+    $txtLog.Size        = New-Object System.Drawing.Size(488, 118)
+    $txtLog.BackColor   = [System.Drawing.Color]::FromArgb(16, 16, 16)
+    $txtLog.ForeColor   = $script:White
+    $txtLog.Font        = $fontMono
+    $txtLog.ReadOnly    = $true
+    $txtLog.BorderStyle = "None"
+    $txtLog.WordWrap    = $false
+    $dlg.Controls.Add($txtLog)
+
+    $btnRun   = New-FlatButton "  Ejecutar" 12  246 100 28 ([System.Drawing.Color]::FromArgb(0, 100, 80))
+    $btnClose = New-FlatButton "  Cerrar"   400 246 100 28 $btnGray
+    $dlg.Controls.Add($btnRun)
+    $dlg.Controls.Add($btnClose)
+
+    $btnClose.Add_Click({ $dlg.Close() })
+
+    $btnRun.Add_Click({
+        $comp = $txtEquipo.Text.Trim()
+        $src  = $txtSrc.Text.Trim()
+        $dst  = $txtDst.Text.Trim()
+        $txtLog.Clear()
+
+        $appendLog = {
+            param([string]$Msg, [System.Drawing.Color]$Col)
+            $txtLog.SelectionStart  = $txtLog.TextLength
+            $txtLog.SelectionLength = 0
+            $txtLog.SelectionColor  = $Col
+            $txtLog.AppendText("$Msg`r`n")
+            $txtLog.ScrollToCaret()
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        if ([string]::IsNullOrWhiteSpace($comp)) {
+            & $appendLog "ERROR: No hay equipo seleccionado en la ventana principal." ([System.Drawing.Color]::Tomato); return
+        }
+        if ([string]::IsNullOrWhiteSpace($src)) {
+            & $appendLog "ERROR: La ruta origen no puede estar vacia." ([System.Drawing.Color]::Tomato); return
+        }
+        if ([string]::IsNullOrWhiteSpace($dst)) {
+            & $appendLog "ERROR: La ruta destino no puede estar vacia." ([System.Drawing.Color]::Tomato); return
+        }
+
+        & $appendLog "Equipo:  $comp" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+        & $appendLog "Origen:  $src"  ([System.Drawing.Color]::Cyan)
+        & $appendLog "Destino: $dst"  ([System.Drawing.Color]::Cyan)
+        & $appendLog ""               ([System.Drawing.Color]::White)
+
+        $btnRun.Enabled = $false
+        $lblComp.Text   = "Equipo: $comp  [ejecutando...]"
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $r = Invoke-LocalOrRemote -ComputerName $comp `
+            -ArgumentList $src, $dst `
+            -ScriptBlock {
+                param([string]$origen, [string]$destino)
+                if (-not (Test-Path $origen)) {
+                    return @{ ExitCode=-1; Output="Ruta origen no encontrada: $origen" }
+                }
+                $out = robocopy $origen $destino /E /R:1 /W:1 /NFL /NDL /NP 2>&1
+                return @{ ExitCode=$LASTEXITCODE; Output=($out -join "`n") }
+            }
+
+        if (-not $r) {
+            & $appendLog "ERROR: Sin respuesta del equipo remoto." ([System.Drawing.Color]::Tomato)
+        } else {
+            $ec = $r.ExitCode
+            if      ($ec -lt 0) { & $appendLog "ERROR: $($r.Output)" ([System.Drawing.Color]::Tomato) }
+            elseif  ($ec -ge 8) {
+                & $appendLog "ERROR: Robocopy rc=$ec. Revisar rutas y permisos." ([System.Drawing.Color]::Tomato)
+                if ($r.Output) { & $appendLog $r.Output.Trim() ([System.Drawing.Color]::Silver) }
+            }
+            elseif  ($ec -eq 0) { & $appendLog "OK: Sin cambios (rc=0). Destino ya actualizado."  ([System.Drawing.Color]::Yellow) }
+            else                { & $appendLog "OK: Copia completada correctamente (rc=$ec)."     ([System.Drawing.Color]::LightGreen) }
+        }
+
+        $btnRun.Enabled = $true
+        $lblComp.Text   = "Equipo: $comp"
+    })
+
+    $dlg.ShowDialog($form) | Out-Null
+    $dlg.Dispose()
+}
+
 # ── Eventos ───────────────────────────────────────────────────────
 
 $btnPing.Add_Click({
@@ -3654,49 +3743,7 @@ $btnPerfilRestore.Add_Click({
         -Action    { Invoke-PerfilRestore -ComputerName $target }
 })
 
-$btnRobocopy.Add_Click({
-    $target = Get-ValidComputer; if (-not $target) { return }
-    $src = $txtRoboSrc.Text.Trim()
-    $dst = $txtRoboDst.Text.Trim()
-    if ([string]::IsNullOrWhiteSpace($src)) {
-        [System.Windows.Forms.MessageBox]::Show("Indica la ruta origen.", "Copia Remota") | Out-Null; return
-    }
-    if ([string]::IsNullOrWhiteSpace($dst)) {
-        [System.Windows.Forms.MessageBox]::Show("Indica la ruta destino.", "Copia Remota") | Out-Null; return
-    }
-    Invoke-ActionButton -ComputerName $target -UseCancel $false `
-        -StatusMsg "Robocopy en '$target'..." `
-        -Action {
-            Write-Sep
-            Write-Info "Copia remota en '$target'"
-            Write-Info "  Origen:  $src"
-            Write-Info "  Destino: $dst"
-            Append-Output "" $script:White
-            $r = Invoke-LocalOrRemote -ComputerName $target `
-                -ArgumentList $src, $dst `
-                -ScriptBlock {
-                    param([string]$origen, [string]$destino)
-                    if (-not (Test-Path $origen)) {
-                        return @{ ExitCode=-1; Output="Ruta origen no encontrada: $origen" }
-                    }
-                    $out = robocopy $origen $destino /E /R:1 /W:1 /NFL /NDL /NP 2>&1
-                    return @{ ExitCode=$LASTEXITCODE; Output=($out -join "`n") }
-                }
-            if (-not $r) {
-                Write-Fail "Sin respuesta del equipo remoto."
-                Write-Sep; Append-Output "" $script:White; return
-            }
-            $ec = $r.ExitCode
-            if ($ec -lt 0)  { Write-Fail $r.Output }
-            elseif ($ec -ge 8) {
-                Write-Fail "Robocopy error (rc=$ec). Revisar rutas y permisos."
-                if ($r.Output) { Append-Output $r.Output.Trim() $script:Silver }
-            }
-            elseif ($ec -eq 0) { Write-Warn "Robocopy completado: sin cambios (rc=0). Destino ya actualizado." }
-            else               { Write-Ok   "Robocopy completado correctamente (rc=$ec)." }
-            Write-Sep; Append-Output "" $script:White
-        }
-})
+$btnRobocopy.Add_Click({ Show-RobocopyForm })
 
 $btnClear.Add_Click({
     $script:outputBox.Clear()
@@ -3760,7 +3807,7 @@ $txtEquipo.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    Append-Output "  Herramienta de Administracion Remota v2.17.0" ([System.Drawing.Color]::FromArgb(0, 190, 255))
+    Append-Output "  Herramienta de Administracion Remota v2.17.1" ([System.Drawing.Color]::FromArgb(0, 190, 255))
     Append-Output "  Accenture / Airbus  |  PowerShell 5.1"    $silver
     Write-Sep
     Append-Output "  > Introduce el nombre del equipo en el campo superior." $silver
