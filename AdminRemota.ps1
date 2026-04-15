@@ -33,7 +33,7 @@ Add-Type -Name ConsoleHelper -Namespace Win32 -MemberDefinition @'
     [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 '@
-[Win32.ConsoleHelper]::ShowWindow([Win32.ConsoleHelper]::GetConsoleWindow(), 0) | Out-Null
+# [Win32.ConsoleHelper]::ShowWindow([Win32.ConsoleHelper]::GetConsoleWindow(), 0) | Out-Null   # TEMP: comentado para ver errores de carga
 
 $ErrorActionPreference = "Continue"
 # Timeout global de 30s para conexion y operaciones WinRM.
@@ -86,14 +86,23 @@ $script:DivisionalCerts = @(
 
 
 # ── Modulos (dot-sourced) ──────────────────────────────────────────
+# Cada modulo se carga en el scope del script llamante, preservando $script:* variables.
 $PSScriptRoot_ = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
 . "$PSScriptRoot_\Modules\AdminRemota.Logging.ps1"
+
 . "$PSScriptRoot_\Modules\AdminRemota.Steps.ps1"
+
 . "$PSScriptRoot_\Modules\AdminRemota.Remote.ps1"
+
 . "$PSScriptRoot_\Modules\AdminRemota.Master.ps1"
+
 . "$PSScriptRoot_\Modules\AdminRemota.Sccm.ps1"
+
 . "$PSScriptRoot_\Modules\AdminRemota.System.ps1"
+
 . "$PSScriptRoot_\Modules\AdminRemota.Perfilazo.ps1"
+
 . "$PSScriptRoot_\Modules\AdminRemota.Gui.ps1"
 
 #region ═══════════════════════════════════════════════════════════
