@@ -3406,7 +3406,7 @@ function Show-RobocopyForm {
     $computer = $txtEquipo.Text.Trim()
 
     $dlg                 = New-Object System.Windows.Forms.Form
-    $dlg.Text            = "Copia Remota – Robocopy"
+    $dlg.Text            = "Copia Remota - Robocopy"
     $dlg.Size            = New-Object System.Drawing.Size(530, 320)
     $dlg.StartPosition   = "CenterParent"
     $dlg.BackColor       = $bgPanel
@@ -3416,8 +3416,8 @@ function Show-RobocopyForm {
     $dlg.MinimizeBox     = $false
 
     $lblComp           = New-Object System.Windows.Forms.Label
-    $lblComp.Text      = if ($computer) { "Equipo: $computer" } else { "ATENCION: ningun equipo seleccionado" }
-    $lblComp.ForeColor = if ($computer) { [System.Drawing.Color]::FromArgb(0, 190, 255) } else { [System.Drawing.Color]::Tomato }
+    if ($computer) { $lblComp.Text = "Equipo: $computer"; $lblComp.ForeColor = [System.Drawing.Color]::FromArgb(0, 190, 255) }
+    else           { $lblComp.Text = "ATENCION: ningun equipo seleccionado"; $lblComp.ForeColor = [System.Drawing.Color]::Tomato }
     $lblComp.Font      = $fontSmall
     $lblComp.AutoSize  = $true
     $lblComp.Location  = New-Object System.Drawing.Point(12, 12)
