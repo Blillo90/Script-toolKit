@@ -352,10 +352,11 @@ foreach ($b in @($btnPerfilazo, $btnPerfilRestore)) { $gUsuario.Controls.Add($b)
 # ── G5: Sensibles (x=750, w=155) ─────────────────────────────────
 $gSensibles = New-GroupPanel "Sensibles" 750 155
 $bw5        = 145
-$btnRestart = New-FlatButton "  Reiniciar"  4 22 $bw5 24 ([System.Drawing.Color]::FromArgb(160, 80, 0))
-$btnUsb     = New-FlatButton "  Borrar USB" 4 50 $bw5 24 $btnRed
+$btnRestart = New-FlatButton "  Reiniciar"   4 22 $bw5 24 ([System.Drawing.Color]::FromArgb(160, 80, 0))
+$btnUsb     = New-FlatButton "  Borrar USB"  4 50 $bw5 24 $btnRed
 $btnUsb.Enabled = $false   # Temporalmente deshabilitado - pendiente reactivacion
-foreach ($b in @($btnRestart, $btnUsb)) { $gSensibles.Controls.Add($b) }
+$btnWinRS   = New-FlatButton "  Shell remota (WinRS)" 4 78 $bw5 24 ([System.Drawing.Color]::FromArgb(80, 30, 120))
+foreach ($b in @($btnRestart, $btnUsb, $btnWinRS)) { $gSensibles.Controls.Add($b) }
 
 foreach ($g in @($gDiag, $gSccm, $gSistema, $gUsuario, $gSensibles)) {
     $actionPanel.Controls.Add($g)
@@ -522,7 +523,7 @@ $script:ActionButtons = @(
     $btnGpUpdate, $btnSccmCycles,
     $btnRepair, $btnChkdsk, $btnCleanup,
     $btnPerfilazo, $btnPerfilRestore,
-    $btnRestart, $btnPing, $btnRobocopy
+    $btnRestart, $btnPing, $btnRobocopy, $btnWinRS
 )
 # ── Eventos ───────────────────────────────────────────────────────
 
@@ -608,6 +609,42 @@ $btnUsb.Add_Click({
     Invoke-ActionButton -ComputerName $target `
         -StatusMsg "Obteniendo drivers USB de '$target'..." `
         -Action    { Invoke-UsbDriverClean -ComputerName $target }
+})
+
+$btnWinRS.Add_Click({
+    $computer = $script:txtEquipo.Text.Trim()
+    if ([string]::IsNullOrEmpty($computer)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Introduce el nombre del equipo remoto primero.",
+            "Campo requerido",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        return
+    }
+    if (Test-IsLocal $computer) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "WinRS no tiene sentido contra el equipo local.",
+            "Equipo local",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+        return
+    }
+    if (-not (Confirm-Action "Se abrira una shell CMD remota en '$computer' via WinRS.`n`nNecesitas permisos de administrador en el equipo remoto.`n`nContinuar?" "Shell remota - WinRS")) {
+        return
+    }
+    Write-Sep
+    Write-Info "Abriendo shell remota en '$computer' via WinRS..."
+    try {
+        # /k mantiene la ventana CMD abierta al salir de la sesion WinRS
+        Start-Process "cmd.exe" -ArgumentList "/k winrs -r:$computer cmd" -ErrorAction Stop
+        Write-Ok "Ventana WinRS abierta para '$computer'."
+        Set-Status "WinRS abierto en '$computer'" ([System.Drawing.Color]::LightGreen)
+    } catch {
+        Write-Fail "No se pudo abrir WinRS: $($_.Exception.Message)"
+        Set-Status "Error al abrir WinRS" ([System.Drawing.Color]::Tomato)
+    }
+    Write-Sep
+    Append-Output "" $white
 })
 
 
