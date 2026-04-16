@@ -611,41 +611,7 @@ $btnUsb.Add_Click({
         -Action    { Invoke-UsbDriverClean -ComputerName $target }
 })
 
-$btnWinRS.Add_Click({
-    $computer = $script:txtEquipo.Text.Trim()
-    if ([string]::IsNullOrEmpty($computer)) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "Introduce el nombre del equipo remoto primero.",
-            "Campo requerido",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
-        return
-    }
-    if (Test-IsLocal $computer) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "WinRS no tiene sentido contra el equipo local.",
-            "Equipo local",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
-        return
-    }
-    if (-not (Confirm-Action "Se abrira una shell CMD remota en '$computer' via WinRS.`n`nNecesitas permisos de administrador en el equipo remoto.`n`nContinuar?" "Shell remota - WinRS")) {
-        return
-    }
-    Write-Sep
-    Write-Info "Abriendo shell remota en '$computer' via WinRS..."
-    try {
-        # /k mantiene la ventana CMD abierta al salir de la sesion WinRS
-        Start-Process "cmd.exe" -ArgumentList "/k winrs -r:$computer cmd" -ErrorAction Stop
-        Write-Ok "Ventana WinRS abierta para '$computer'."
-        Set-Status "WinRS abierto en '$computer'" ([System.Drawing.Color]::LightGreen)
-    } catch {
-        Write-Fail "No se pudo abrir WinRS: $($_.Exception.Message)"
-        Set-Status "Error al abrir WinRS" ([System.Drawing.Color]::Tomato)
-    }
-    Write-Sep
-    Append-Output "" $white
-})
+$btnWinRS.Add_Click({ Show-WinRSSession })
 
 
 $btnRestart.Add_Click({
