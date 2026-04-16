@@ -33,7 +33,7 @@ Add-Type -Name ConsoleHelper -Namespace Win32 -MemberDefinition @'
     [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 '@
-# [Win32.ConsoleHelper]::ShowWindow([Win32.ConsoleHelper]::GetConsoleWindow(), 0) | Out-Null   # TEMP: comentado para ver errores de carga
+[Win32.ConsoleHelper]::ShowWindow([Win32.ConsoleHelper]::GetConsoleWindow(), 0) | Out-Null
 
 $ErrorActionPreference = "Continue"
 # Timeout global de 30s para conexion y operaciones WinRM.
