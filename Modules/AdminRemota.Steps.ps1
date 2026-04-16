@@ -33,13 +33,14 @@ function Invoke-Step {
     Write-Info "---- $Name ----"
     try {
         $res     = & $ScriptBlock
-        # Si el scriptblock devuelve null (Invoke-Command silenciado por red/acceso), se
-        # registra como WARN en lugar de OK para no dar falsos positivos en el resumen.
+        # Invoke-LocalOrRemote usa ErrorAction=Stop: los fallos de red/WinRM lanzan
+        # excepcion y caen al catch de abajo. El path null==WARN es seguridad adicional
+        # para scriptblocks que no devuelven valor (return sin argumento).
         $status  = if     ($res -is [hashtable] -and $res.Status) { $res.Status }
                    elseif ($null -eq $res)                         { "WARN"      }
                    else                                            { "OK"        }
         $details = if ($res -is [hashtable] -and $res.Details) { ($res.Details | Out-String).Trim() }
-                   elseif ($null -eq $res)                      { "Sin respuesta remota (red o acceso?)" }
+                   elseif ($null -eq $res)                      { "Sin respuesta (scriptblock no devolvio valor)" }
                    else                                         { "" }
         Add-StepResult -Step $Name -Status $status -Details $details
         switch ($status) {

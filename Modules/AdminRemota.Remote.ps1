@@ -100,6 +100,18 @@ function Get-TargetNetworkZone {
 
 # ── Lanza los ciclos SCCM estandar (scriptblock ejecutado en equipo remoto) ───
 $script:SccmCyclesBlock = {
+    # Pre-check: sin CcmExec Running el proveedor WMI root\ccm no esta disponible
+    # y todos los TriggerSchedule lanzarian excepciones COM ilegibles.
+    # Se devuelve WARN (no ERROR) porque el diagnostico real de "CcmExec Stopped"
+    # ya lo da el paso "Centro de Software" via Test-RemoteSccmReady.
+    $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        return @{ Status = "WARN"; Details = "CcmExec no instalado - ciclos omitidos" }
+    }
+    if ($svc.Status -ne "Running") {
+        return @{ Status = "WARN"; Details = "CcmExec $($svc.Status) - ciclos omitidos" }
+    }
+
     $actions = @(
         @{ Name="App Deployment Evaluation";   Id="{00000000-0000-0000-0000-000000000121}" },
         @{ Name="Discovery Data Collection";   Id="{00000000-0000-0000-0000-000000000003}" },
@@ -111,6 +123,14 @@ $script:SccmCyclesBlock = {
         @{ Name="Software Update Scan";        Id="{00000000-0000-0000-0000-000000000113}" },
         @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}" }
     )
+
+    # Ciclos que pueden lanzar excepcion COM en clientes sanos (sin despliegues activos,
+    # agente ocupado, WSUS no configurado). Se degradan a WARN para no bloquear el resumen.
+    $warnOnException = @(
+        "{00000000-0000-0000-0000-000000000121}",  # App Deployment Evaluation
+        "{00000000-0000-0000-0000-000000000114}"   # SW Update Deployment Eval
+    )
+
     $log = @(); $anyError = $false; $anyWarn = $false
     foreach ($a in $actions) {
         try {
@@ -119,7 +139,13 @@ $script:SccmCyclesBlock = {
             if ($rv -eq 0) { $log += "$($a.Name)=OK" }
             else            { $log += "$($a.Name)=WARN($rv)"; $anyWarn = $true }
         } catch {
-            $log += "$($a.Name)=ERROR($($_.Exception.Message))"; $anyError = $true
+            $msg = $_.Exception.Message
+            if ($a.Id -in $warnOnException) {
+                # Fallo esperado en este ciclo: no es indicativo de cliente roto
+                $log += "$($a.Name)=WARN($msg)"; $anyWarn = $true
+            } else {
+                $log += "$($a.Name)=ERROR($msg)"; $anyError = $true
+            }
         }
     }
     $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
