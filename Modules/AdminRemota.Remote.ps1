@@ -100,6 +100,7 @@ function Get-TargetNetworkZone {
 
 # ── Lanza los ciclos SCCM estandar (scriptblock ejecutado en equipo remoto) ───
 $script:SccmCyclesBlock = {
+    try {
     # Pre-check: sin CcmExec Running el proveedor WMI root\ccm no esta disponible.
     $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
     if (-not $svc) {
@@ -112,13 +113,20 @@ $script:SccmCyclesBlock = {
     # Descubrir que ciclos estan realmente registrados en este cliente.
     # CCM_Scheduler_ScheduledMessage vive en root\ccm (no en root\ccm\clientSDK).
     # Se intenta root\ccm\clientSDK como fallback por si la version de cliente difiere.
-    $allMessages = @(Get-CimInstance -Namespace 'root\ccm' `
-                                     -ClassName  'CCM_Scheduler_ScheduledMessage' `
-                                     -ErrorAction SilentlyContinue)
-    if ($allMessages.Count -eq 0) {
-        $allMessages = @(Get-CimInstance -Namespace 'root\ccm\clientSDK' `
+    # NOTA: Get-CimInstance lanza CimException terminante (no suprimible con SilentlyContinue)
+    # cuando la clase no existe; por eso se usa try/catch en lugar de solo -ErrorAction.
+    $allMessages = @()
+    try {
+        $allMessages = @(Get-CimInstance -Namespace 'root\ccm' `
                                          -ClassName  'CCM_Scheduler_ScheduledMessage' `
                                          -ErrorAction SilentlyContinue)
+    } catch {}
+    if ($allMessages.Count -eq 0) {
+        try {
+            $allMessages = @(Get-CimInstance -Namespace 'root\ccm\clientSDK' `
+                                             -ClassName  'CCM_Scheduler_ScheduledMessage' `
+                                             -ErrorAction SilentlyContinue)
+        } catch {}
     }
 
     $totalDetected = $allMessages.Count
@@ -182,6 +190,9 @@ $script:SccmCyclesBlock = {
 
     $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
     return @{ Status=$s; Details=($log -join " | ") }
+    } catch {
+        return @{ Status="ERROR"; Details="Excepcion inesperada en SccmCyclesBlock: $($_.Exception.Message)" }
+    }
 }
 
 # ── Espera un job manteniendo la GUI viva via DoEvents ────────────────────────
