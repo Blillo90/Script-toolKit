@@ -110,31 +110,12 @@ $script:SccmCyclesBlock = {
         return @{ Status = "WARN"; Details = "CcmExec $($svc.Status) - ciclos omitidos" }
     }
 
-    # Descubrir que ciclos estan realmente registrados en este cliente.
-    # root\ccm\clientSDK expone la propiedad ScheduleID (correcta para comparar con TriggerSchedule).
-    # root\ccm usa ScheduledMessageID (propiedad distinta) — se intenta como fallback.
-    # NOTA: Get-CimInstance lanza CimException terminante (no suprimible con SilentlyContinue)
-    # cuando la clase no existe; por eso se usa try/catch en lugar de solo -ErrorAction.
-    $allMessages = @()
-    try {
-        $allMessages = @(Get-CimInstance -Namespace 'root\ccm\clientSDK' `
-                                         -ClassName  'CCM_Scheduler_ScheduledMessage' `
-                                         -ErrorAction SilentlyContinue)
-    } catch {}
-    if ($allMessages.Count -eq 0) {
-        try {
-            $allMessages = @(Get-CimInstance -Namespace 'root\ccm' `
-                                             -ClassName  'CCM_Scheduler_ScheduledMessage' `
-                                             -ErrorAction SilentlyContinue)
-        } catch {}
-    }
-
-    $totalDetected = $allMessages.Count
-    $availableIds  = @($allMessages | ForEach-Object { $_.ScheduleID })
-
     # Ciclos objetivo identificados por ScheduleID (estable, sin dependencia de idioma).
     # SoftFail=true: el ciclo puede lanzar excepcion COM en clientes sanos
-    # (sin despliegues activos, agente ocupado) -> se degrada a WARN, no ERROR.
+    # (sin despliegues activos, agente ocupado, sin sesion de usuario) -> se degrada a WARN, no ERROR.
+    # NOTA: No se enumeran ciclos via CCM_Scheduler_ScheduledMessage (poco fiable, inconsistente
+    # entre versiones de cliente y sin soporte remoto estable). Se dispara cada ciclo directamente
+    # y se captura el fallo por ciclo individual.
     $targets = @(
         @{ Name="App Deployment Evaluation";   Id="{00000000-0000-0000-0000-000000000121}"; SoftFail=$true  },
         @{ Name="Discovery Data Collection";   Id="{00000000-0000-0000-0000-000000000003}"; SoftFail=$false },
@@ -148,19 +129,10 @@ $script:SccmCyclesBlock = {
         @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}"; SoftFail=$false }
     )
 
-    $log = @("Total ciclos detectados en cliente: $totalDetected")
-    $anyError = $false; $anyWarn = $false; $notFound = 0
+    $log = @()
+    $anyError = $false; $anyWarn = $false
 
     foreach ($t in $targets) {
-        # Si tenemos lista de IDs disponibles y este no aparece, el ciclo no esta
-        # configurado en este cliente -> WARN informativo, no intentar TriggerSchedule.
-        if ($totalDetected -gt 0 -and $t.Id -notin $availableIds) {
-            $log += "$($t.Name)=WARN(no configurado en este cliente)"
-            $anyWarn = $true
-            $notFound++
-            continue
-        }
-
         try {
             $rv = [int](Invoke-WmiMethod -Namespace "root\ccm" -Class "SMS_Client" `
                         -Name "TriggerSchedule" -ArgumentList @($t.Id)).ReturnValue
@@ -174,23 +146,6 @@ $script:SccmCyclesBlock = {
                 $log += "$($t.Name)=ERROR($msg)"; $anyError = $true
             }
         }
-    }
-
-    # Resumen de deteccion de ciclos de politica (clave para diagnostico).
-    $mpId = "{00000000-0000-0000-0000-000000000021}"
-    $upId = "{00000000-0000-0000-0000-000000000027}"
-    $log += "Machine Policy: $(if ($mpId -in $availableIds) { 'FOUND' } else { 'NOT FOUND' })"
-    $log += "User Policy: $(if ($upId -in $availableIds) { 'FOUND' } else { 'NOT FOUND' })"
-
-    # Debug: lista completa de ScheduleIDs detectados en el cliente.
-    if ($totalDetected -gt 0) {
-        $log += "ScheduleIDs detectados: $($availableIds -join ', ')"
-    }
-
-    # Si no se pudo obtener la lista Y todos los TriggerSchedule fallaron,
-    # el namespace o la clase no esta accesible.
-    if ($totalDetected -eq 0 -and $anyError) {
-        $log += "SCCM client may not be installed or WMI is not accessible (root\ccm\clientSDK\CCM_Scheduler_ScheduledMessage)"
     }
 
     $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
