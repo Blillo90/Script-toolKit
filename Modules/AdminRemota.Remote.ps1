@@ -124,41 +124,44 @@ $script:SccmCyclesBlock = {
     $totalDetected = $allMessages.Count
     $availableIds  = @($allMessages | ForEach-Object { $_.ScheduledMessageID })
 
-    $actions = @(
-        @{ Name="App Deployment Evaluation";   Id="{00000000-0000-0000-0000-000000000121}" },
-        @{ Name="Discovery Data Collection";   Id="{00000000-0000-0000-0000-000000000003}" },
-        @{ Name="Hardware Inventory";          Id="{00000000-0000-0000-0000-000000000001}" },
-        @{ Name="Machine Policy Retrieval";    Id="{00000000-0000-0000-0000-000000000021}" },
-        @{ Name="Machine Policy Evaluation";   Id="{00000000-0000-0000-0000-000000000022}" },
-        @{ Name="Software Inventory";          Id="{00000000-0000-0000-0000-000000000002}" },
-        @{ Name="SW Update Deployment Eval";   Id="{00000000-0000-0000-0000-000000000114}" },
-        @{ Name="Software Update Scan";        Id="{00000000-0000-0000-0000-000000000113}" },
-        @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}" }
+    # Ciclos objetivo identificados por ScheduleID (estable, sin dependencia de idioma).
+    # SoftFail=true: el ciclo puede lanzar excepcion COM en clientes sanos
+    # (sin despliegues activos, agente ocupado) -> se degrada a WARN, no ERROR.
+    $targets = @(
+        @{ Name="App Deployment Evaluation";   Id="{00000000-0000-0000-0000-000000000121}"; SoftFail=$true  },
+        @{ Name="Discovery Data Collection";   Id="{00000000-0000-0000-0000-000000000003}"; SoftFail=$false },
+        @{ Name="Hardware Inventory";          Id="{00000000-0000-0000-0000-000000000001}"; SoftFail=$false },
+        @{ Name="Machine Policy Retrieval";    Id="{00000000-0000-0000-0000-000000000021}"; SoftFail=$false },
+        @{ Name="Machine Policy Evaluation";   Id="{00000000-0000-0000-0000-000000000022}"; SoftFail=$false },
+        @{ Name="Software Inventory";          Id="{00000000-0000-0000-0000-000000000002}"; SoftFail=$false },
+        @{ Name="SW Update Deployment Eval";   Id="{00000000-0000-0000-0000-000000000114}"; SoftFail=$true  },
+        @{ Name="Software Update Scan";        Id="{00000000-0000-0000-0000-000000000113}"; SoftFail=$false },
+        @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}"; SoftFail=$false }
     )
 
-    $warnOnException = @(
-        "{00000000-0000-0000-0000-000000000121}",
-        "{00000000-0000-0000-0000-000000000114}"
-    )
+    $log = @(); $anyError = $false; $anyWarn = $false; $notFound = 0
 
-    $log = @(); $anyError = $false; $anyWarn = $false
-    foreach ($a in $actions) {
-        if ($totalDetected -gt 0 -and $a.Id -notin $availableIds) {
-            $log += "$($a.Name)=WARN(no configurado en este cliente)"
+    foreach ($t in $targets) {
+        # Si tenemos lista de IDs disponibles y este no aparece, el ciclo no esta
+        # configurado en este cliente -> WARN informativo, no intentar TriggerSchedule.
+        if ($totalDetected -gt 0 -and $t.Id -notin $availableIds) {
+            $log += "$($t.Name)=WARN(no configurado en este cliente)"
             $anyWarn = $true
+            $notFound++
             continue
         }
+
         try {
             $rv = [int](Invoke-WmiMethod -Namespace "root\ccm" -Class "SMS_Client" `
-                        -Name "TriggerSchedule" -ArgumentList @($a.Id)).ReturnValue
-            if ($rv -eq 0) { $log += "$($a.Name)=OK" }
-            else            { $log += "$($a.Name)=WARN($rv)"; $anyWarn = $true }
+                        -Name "TriggerSchedule" -ArgumentList @($t.Id)).ReturnValue
+            if ($rv -eq 0) { $log += "$($t.Name)=OK" }
+            else            { $log += "$($t.Name)=WARN(rv=$rv)"; $anyWarn = $true }
         } catch {
             $msg = $_.Exception.Message
-            if ($a.Id -in $warnOnException) {
-                $log += "$($a.Name)=WARN($msg)"; $anyWarn = $true
+            if ($t.SoftFail) {
+                $log += "$($t.Name)=WARN($msg)"; $anyWarn = $true
             } else {
-                $log += "$($a.Name)=ERROR($msg)"; $anyError = $true
+                $log += "$($t.Name)=ERROR($msg)"; $anyError = $true
             }
         }
     }
