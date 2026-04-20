@@ -101,13 +101,42 @@ function Get-TargetNetworkZone {
 # ── Lanza los ciclos SCCM estandar (scriptblock ejecutado en equipo remoto) ───
 $script:SccmCyclesBlock = {
     try {
-    # Pre-check: sin CcmExec Running el proveedor WMI root\ccm no esta disponible.
+    # Validacion de salud del cliente SCCM (reemplaza la enumeracion no fiable de ciclos).
+    # Se reportan tres indicadores independientes:
+    #   - SCCM client accessible: CcmExec instalado y Running
+    #   - Client health status:   namespace root\ccm accesible via CIM
+    #   - Policy trigger capability: clase SMS_Client/TriggerSchedule disponible
     $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
+    $clientAccessible = ($svc -and $svc.Status -eq 'Running')
     if (-not $svc) {
-        return @{ Status = "WARN"; Details = "CcmExec no instalado - ciclos omitidos" }
+        return @{ Status = "WARN"; Details = "SCCM client accessible: NO (CcmExec no instalado)" }
     }
     if ($svc.Status -ne "Running") {
-        return @{ Status = "WARN"; Details = "CcmExec $($svc.Status) - ciclos omitidos" }
+        return @{ Status = "WARN"; Details = "SCCM client accessible: NO (CcmExec $($svc.Status))" }
+    }
+
+    # Client health status: namespace root\ccm accesible.
+    $namespaceOk = $false
+    try {
+        $null = Get-CimInstance -Namespace 'root\ccm' -ClassName '__NAMESPACE' -ErrorAction Stop
+        $namespaceOk = $true
+    } catch {}
+
+    # Policy trigger capability: clase SMS_Client (TriggerSchedule) disponible.
+    $triggerCapable = $false
+    try {
+        $null = Get-CimClass -Namespace 'root\ccm' -ClassName 'SMS_Client' -ErrorAction Stop
+        $triggerCapable = $true
+    } catch {}
+
+    $health = @(
+        "SCCM client accessible: YES"
+        "Client health status: $(if ($namespaceOk)     { 'OK' }        else { 'ERROR (root\ccm inaccesible)' })"
+        "Policy trigger capability: $(if ($triggerCapable) { 'AVAILABLE' } else { 'UNAVAILABLE' })"
+    )
+
+    if (-not $triggerCapable) {
+        return @{ Status = "ERROR"; Details = ($health -join " | ") }
     }
 
     # Ciclos objetivo identificados por ScheduleID (estable, sin dependencia de idioma).
@@ -129,7 +158,7 @@ $script:SccmCyclesBlock = {
         @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}"; SoftFail=$false }
     )
 
-    $log = @()
+    $log = @() + $health
     $anyError = $false; $anyWarn = $false
 
     foreach ($t in $targets) {
