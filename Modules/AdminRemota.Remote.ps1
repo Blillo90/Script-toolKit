@@ -176,17 +176,21 @@ $script:SccmCyclesBlock = {
         }
     }
 
-    # Fallback: si algunos ciclos objetivo no estaban en la lista, mostrar
-    # una muestra de los que SI existen para facilitar el diagnostico.
-    if ($notFound -gt 0 -and $totalDetected -gt 0) {
-        $sample = ($availableIds | Select-Object -First 5) -join ", "
-        $log += "IDs disponibles en cliente (muestra): $sample"
+    # Resumen de deteccion de ciclos de politica (clave para diagnostico).
+    $mpId = "{00000000-0000-0000-0000-000000000021}"
+    $upId = "{00000000-0000-0000-0000-000000000027}"
+    $log += "Machine Policy: $(if ($mpId -in $availableIds) { 'FOUND' } else { 'NOT FOUND' })"
+    $log += "User Policy: $(if ($upId -in $availableIds) { 'FOUND' } else { 'NOT FOUND' })"
+
+    # Debug: lista completa de ScheduleIDs detectados en el cliente.
+    if ($totalDetected -gt 0) {
+        $log += "ScheduleIDs detectados: $($availableIds -join ', ')"
     }
 
     # Si no se pudo obtener la lista Y todos los TriggerSchedule fallaron,
     # el namespace o la clase no esta accesible.
     if ($totalDetected -eq 0 -and $anyError) {
-        $log += "SCCM client may not be installed or WMI is not accessible (root\ccm\CCM_Scheduler_ScheduledMessage)"
+        $log += "SCCM client may not be installed or WMI is not accessible (root\ccm\clientSDK\CCM_Scheduler_ScheduledMessage)"
     }
 
     $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
