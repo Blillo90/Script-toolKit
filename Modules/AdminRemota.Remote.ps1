@@ -33,11 +33,14 @@ function Invoke-LocalOrRemote {
     } else {
         $script:RemoteSessionOpt
     }
+    # No se fuerza ErrorAction='Stop': asi respetamos el default global
+    # $PSDefaultParameterValues['Invoke-Command:ErrorAction']='SilentlyContinue'
+    # (comportamiento pre-modularizacion). Si WinRM falla, Invoke-Command emite
+    # un error no-terminante y devuelve $null -> callers deben tratar $null.
     $opts = @{
         ComputerName  = $ComputerName
         ScriptBlock   = $ScriptBlock
         SessionOption = $sessOpt
-        ErrorAction   = 'Stop'
     }
     if ($ArgumentList.Count -gt 0) { $opts['ArgumentList'] = $ArgumentList }
     return Invoke-Command @opts

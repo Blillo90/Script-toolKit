@@ -39,8 +39,9 @@ $ErrorActionPreference = "Continue"
 # Timeout global de 30s para conexion y operaciones WinRM.
 # Se aplica automaticamente a todos los Invoke-Command sin SessionOption explicito.
 $script:RemoteSessionOpt = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 30000
-$PSDefaultParameterValues['Invoke-Command:SessionOption']  = $script:RemoteSessionOpt
-$PSDefaultParameterValues['Get-CimInstance:ErrorAction']   = 'SilentlyContinue'
+$PSDefaultParameterValues['Invoke-Command:SessionOption'] = $script:RemoteSessionOpt
+$PSDefaultParameterValues['Invoke-Command:ErrorAction']   = 'SilentlyContinue'
+$PSDefaultParameterValues['Get-CimInstance:ErrorAction']  = 'SilentlyContinue'
 
 #region ═══════════════════════════════════════════════════════════
 # CONSTANTES Y ESTADO GLOBAL
