@@ -139,7 +139,8 @@ $script:SccmCyclesBlock = {
         @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}"; SoftFail=$false }
     )
 
-    $log = @(); $anyError = $false; $anyWarn = $false; $notFound = 0
+    $log = @("Total ciclos detectados en cliente: $totalDetected")
+    $anyError = $false; $anyWarn = $false; $notFound = 0
 
     foreach ($t in $targets) {
         # Si tenemos lista de IDs disponibles y este no aparece, el ciclo no esta
@@ -165,6 +166,20 @@ $script:SccmCyclesBlock = {
             }
         }
     }
+
+    # Fallback: si algunos ciclos objetivo no estaban en la lista, mostrar
+    # una muestra de los que SI existen para facilitar el diagnostico.
+    if ($notFound -gt 0 -and $totalDetected -gt 0) {
+        $sample = ($availableIds | Select-Object -First 5) -join ", "
+        $log += "IDs disponibles en cliente (muestra): $sample"
+    }
+
+    # Si no se pudo obtener la lista Y todos los TriggerSchedule fallaron,
+    # el namespace o la clase no esta accesible.
+    if ($totalDetected -eq 0 -and $anyError) {
+        $log += "SCCM client may not be installed or WMI is not accessible (root\ccm\CCM_Scheduler_ScheduledMessage)"
+    }
+
     $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
     return @{ Status=$s; Details=($log -join " | ") }
 }
