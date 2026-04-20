@@ -66,8 +66,14 @@ function Test-RemoteSccmReady {
             $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
             if (-not $svc)                 { return "ERROR: CcmExec no instalado" }
             if ($svc.Status -ne "Running") { return "ERROR: CcmExec $($svc.Status)" }
-            $ns = Get-CimInstance -Namespace "root\ccm" -ClassName "__NAMESPACE" `
-                                  -Filter "Name='ClientSDK'" -ErrorAction SilentlyContinue
+            # Get-CimInstance puede lanzar CimException terminante ("No encontrado" en es-ES)
+            # que -ErrorAction SilentlyContinue no suprime. try/catch local evita que la
+            # excepcion escape el scriptblock via Invoke-Command.
+            $ns = $null
+            try {
+                $ns = Get-CimInstance -Namespace "root\ccm" -ClassName "__NAMESPACE" `
+                                      -Filter "Name='ClientSDK'" -ErrorAction SilentlyContinue
+            } catch {}
             if (-not $ns)                  { return "ERROR: namespace root\ccm\ClientSDK inaccesible (WMI?)" }
             return "OK"
         }
@@ -101,93 +107,56 @@ function Get-TargetNetworkZone {
 # ── Lanza los ciclos SCCM estandar (scriptblock ejecutado en equipo remoto) ───
 $script:SccmCyclesBlock = {
     try {
-    # Detecta si el scriptblock se ejecuta en una sesion remota (via Invoke-Command).
-    # $PSSenderInfo solo esta definido en sesiones remotas; en local es $null.
-    # Cuando es remota no intentamos enumerar ciclos (inestable via WinRM/CIM);
-    # el disparo directo por ID sigue funcionando y es el unico camino soportado.
-    $isRemoteSession = $null -ne $PSSenderInfo
+        # Pre-check: sin CcmExec Running el proveedor WMI root\ccm no esta disponible
+        # y los TriggerSchedule fallarian todos. No se hacen comprobaciones CIM
+        # adicionales (Get-CimInstance/__NAMESPACE, Get-CimClass SMS_Client) porque
+        # en algunas sesiones remotas lanzan excepciones que escapan el try/catch
+        # y aparecen como "Error inesperado: No encontrado" en la GUI.
+        $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
+        if (-not $svc) {
+            return @{ Status = "WARN"; Details = "CcmExec no instalado - ciclos omitidos" }
+        }
+        if ($svc.Status -ne "Running") {
+            return @{ Status = "WARN"; Details = "CcmExec $($svc.Status) - ciclos omitidos" }
+        }
 
-    # Validacion de salud del cliente SCCM (reemplaza la enumeracion no fiable de ciclos).
-    # Se reportan tres indicadores independientes:
-    #   - SCCM client accessible: CcmExec instalado y Running
-    #   - Client health status:   namespace root\ccm accesible via CIM
-    #   - Policy trigger capability: clase SMS_Client/TriggerSchedule disponible
-    $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
-    $clientAccessible = ($svc -and $svc.Status -eq 'Running')
-    if (-not $svc) {
-        return @{ Status = "WARN"; Details = "SCCM client accessible: NO (CcmExec no instalado)" }
-    }
-    if ($svc.Status -ne "Running") {
-        return @{ Status = "WARN"; Details = "SCCM client accessible: NO (CcmExec $($svc.Status))" }
-    }
+        # Ciclos objetivo identificados por ScheduleID (estable, sin dependencia de idioma).
+        # SoftFail=true: el ciclo puede lanzar excepcion COM en clientes sanos
+        # (sin despliegues activos, sin sesion de usuario) -> se degrada a WARN.
+        $targets = @(
+            @{ Name="App Deployment Evaluation";   Id="{00000000-0000-0000-0000-000000000121}"; SoftFail=$true  },
+            @{ Name="Discovery Data Collection";   Id="{00000000-0000-0000-0000-000000000003}"; SoftFail=$false },
+            @{ Name="Hardware Inventory";          Id="{00000000-0000-0000-0000-000000000001}"; SoftFail=$false },
+            @{ Name="Machine Policy Retrieval";    Id="{00000000-0000-0000-0000-000000000021}"; SoftFail=$false },
+            @{ Name="Machine Policy Evaluation";   Id="{00000000-0000-0000-0000-000000000022}"; SoftFail=$false },
+            @{ Name="User Policy Retrieval";       Id="{00000000-0000-0000-0000-000000000027}"; SoftFail=$true  },
+            @{ Name="Software Inventory";          Id="{00000000-0000-0000-0000-000000000002}"; SoftFail=$false },
+            @{ Name="SW Update Deployment Eval";   Id="{00000000-0000-0000-0000-000000000114}"; SoftFail=$true  },
+            @{ Name="Software Update Scan";        Id="{00000000-0000-0000-0000-000000000113}"; SoftFail=$false },
+            @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}"; SoftFail=$false }
+        )
 
-    # Client health status: namespace root\ccm accesible.
-    $namespaceOk = $false
-    try {
-        $null = Get-CimInstance -Namespace 'root\ccm' -ClassName '__NAMESPACE' -ErrorAction Stop
-        $namespaceOk = $true
-    } catch {}
+        $log = @()
+        $anyError = $false; $anyWarn = $false
 
-    # Policy trigger capability: clase SMS_Client (TriggerSchedule) disponible.
-    $triggerCapable = $false
-    try {
-        $null = Get-CimClass -Namespace 'root\ccm' -ClassName 'SMS_Client' -ErrorAction Stop
-        $triggerCapable = $true
-    } catch {}
-
-    $health = @(
-        "SCCM client accessible: YES"
-        "Client health status: $(if ($namespaceOk)     { 'OK' }        else { 'ERROR (root\ccm inaccesible)' })"
-        "Policy trigger capability: $(if ($triggerCapable) { 'AVAILABLE' } else { 'UNAVAILABLE' })"
-    )
-    if ($isRemoteSession) {
-        $health += "Remote SCCM cycle enumeration is not supported - triggering cycles directly"
-    }
-
-    if (-not $triggerCapable) {
-        return @{ Status = "ERROR"; Details = ($health -join " | ") }
-    }
-
-    # Ciclos objetivo identificados por ScheduleID (estable, sin dependencia de idioma).
-    # SoftFail=true: el ciclo puede lanzar excepcion COM en clientes sanos
-    # (sin despliegues activos, agente ocupado, sin sesion de usuario) -> se degrada a WARN, no ERROR.
-    # NOTA: No se enumeran ciclos via CCM_Scheduler_ScheduledMessage (poco fiable, inconsistente
-    # entre versiones de cliente y sin soporte remoto estable). Se dispara cada ciclo directamente
-    # y se captura el fallo por ciclo individual.
-    $targets = @(
-        @{ Name="App Deployment Evaluation";   Id="{00000000-0000-0000-0000-000000000121}"; SoftFail=$true  },
-        @{ Name="Discovery Data Collection";   Id="{00000000-0000-0000-0000-000000000003}"; SoftFail=$false },
-        @{ Name="Hardware Inventory";          Id="{00000000-0000-0000-0000-000000000001}"; SoftFail=$false },
-        @{ Name="Machine Policy Retrieval";    Id="{00000000-0000-0000-0000-000000000021}"; SoftFail=$false },
-        @{ Name="Machine Policy Evaluation";   Id="{00000000-0000-0000-0000-000000000022}"; SoftFail=$false },
-        @{ Name="User Policy Retrieval";       Id="{00000000-0000-0000-0000-000000000027}"; SoftFail=$true  },
-        @{ Name="Software Inventory";          Id="{00000000-0000-0000-0000-000000000002}"; SoftFail=$false },
-        @{ Name="SW Update Deployment Eval";   Id="{00000000-0000-0000-0000-000000000114}"; SoftFail=$true  },
-        @{ Name="Software Update Scan";        Id="{00000000-0000-0000-0000-000000000113}"; SoftFail=$false },
-        @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}"; SoftFail=$false }
-    )
-
-    $log = @() + $health
-    $anyError = $false; $anyWarn = $false
-
-    foreach ($t in $targets) {
-        try {
-            $rv = [int](Invoke-WmiMethod -Namespace "root\ccm" -Class "SMS_Client" `
-                        -Name "TriggerSchedule" -ArgumentList @($t.Id)).ReturnValue
-            if ($rv -eq 0) { $log += "$($t.Name)=OK" }
-            else            { $log += "$($t.Name)=WARN(rv=$rv)"; $anyWarn = $true }
-        } catch {
-            $msg = $_.Exception.Message
-            if ($t.SoftFail) {
-                $log += "$($t.Name)=WARN($msg)"; $anyWarn = $true
-            } else {
-                $log += "$($t.Name)=ERROR($msg)"; $anyError = $true
+        foreach ($t in $targets) {
+            try {
+                $rv = [int](Invoke-WmiMethod -Namespace "root\ccm" -Class "SMS_Client" `
+                            -Name "TriggerSchedule" -ArgumentList @($t.Id)).ReturnValue
+                if ($rv -eq 0) { $log += "$($t.Name)=OK" }
+                else            { $log += "$($t.Name)=WARN(rv=$rv)"; $anyWarn = $true }
+            } catch {
+                $msg = $_.Exception.Message
+                if ($t.SoftFail) {
+                    $log += "$($t.Name)=WARN($msg)"; $anyWarn = $true
+                } else {
+                    $log += "$($t.Name)=ERROR($msg)"; $anyError = $true
+                }
             }
         }
-    }
 
-    $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
-    return @{ Status=$s; Details=($log -join " | ") }
+        $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
+        return @{ Status=$s; Details=($log -join " | ") }
     } catch {
         return @{ Status="ERROR"; Details="Excepcion inesperada en SccmCyclesBlock: $($_.Exception.Message)" }
     }
