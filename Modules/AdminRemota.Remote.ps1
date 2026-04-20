@@ -111,26 +111,26 @@ $script:SccmCyclesBlock = {
     }
 
     # Descubrir que ciclos estan realmente registrados en este cliente.
-    # CCM_Scheduler_ScheduledMessage vive en root\ccm (no en root\ccm\clientSDK).
-    # Se intenta root\ccm\clientSDK como fallback por si la version de cliente difiere.
+    # root\ccm\clientSDK expone la propiedad ScheduleID (correcta para comparar con TriggerSchedule).
+    # root\ccm usa ScheduledMessageID (propiedad distinta) — se intenta como fallback.
     # NOTA: Get-CimInstance lanza CimException terminante (no suprimible con SilentlyContinue)
     # cuando la clase no existe; por eso se usa try/catch en lugar de solo -ErrorAction.
     $allMessages = @()
     try {
-        $allMessages = @(Get-CimInstance -Namespace 'root\ccm' `
+        $allMessages = @(Get-CimInstance -Namespace 'root\ccm\clientSDK' `
                                          -ClassName  'CCM_Scheduler_ScheduledMessage' `
                                          -ErrorAction SilentlyContinue)
     } catch {}
     if ($allMessages.Count -eq 0) {
         try {
-            $allMessages = @(Get-CimInstance -Namespace 'root\ccm\clientSDK' `
+            $allMessages = @(Get-CimInstance -Namespace 'root\ccm' `
                                              -ClassName  'CCM_Scheduler_ScheduledMessage' `
                                              -ErrorAction SilentlyContinue)
         } catch {}
     }
 
     $totalDetected = $allMessages.Count
-    $availableIds  = @($allMessages | ForEach-Object { $_.ScheduledMessageID })
+    $availableIds  = @($allMessages | ForEach-Object { $_.ScheduleID })
 
     # Ciclos objetivo identificados por ScheduleID (estable, sin dependencia de idioma).
     # SoftFail=true: el ciclo puede lanzar excepcion COM en clientes sanos
