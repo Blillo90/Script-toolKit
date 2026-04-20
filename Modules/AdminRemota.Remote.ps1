@@ -100,10 +100,7 @@ function Get-TargetNetworkZone {
 
 # ── Lanza los ciclos SCCM estandar (scriptblock ejecutado en equipo remoto) ───
 $script:SccmCyclesBlock = {
-    # Pre-check: sin CcmExec Running el proveedor WMI root\ccm no esta disponible
-    # y todos los TriggerSchedule lanzarian excepciones COM ilegibles.
-    # Se devuelve WARN (no ERROR) porque el diagnostico real de "CcmExec Stopped"
-    # ya lo da el paso "Centro de Software" via Test-RemoteSccmReady.
+    # Pre-check: sin CcmExec Running el proveedor WMI root\ccm no esta disponible.
     $svc = Get-Service "CcmExec" -ErrorAction SilentlyContinue
     if (-not $svc) {
         return @{ Status = "WARN"; Details = "CcmExec no instalado - ciclos omitidos" }
@@ -111,6 +108,21 @@ $script:SccmCyclesBlock = {
     if ($svc.Status -ne "Running") {
         return @{ Status = "WARN"; Details = "CcmExec $($svc.Status) - ciclos omitidos" }
     }
+
+    # Descubrir que ciclos estan realmente registrados en este cliente.
+    # CCM_Scheduler_ScheduledMessage vive en root\ccm (no en root\ccm\clientSDK).
+    # Se intenta root\ccm\clientSDK como fallback por si la version de cliente difiere.
+    $allMessages = @(Get-CimInstance -Namespace 'root\ccm' `
+                                     -ClassName  'CCM_Scheduler_ScheduledMessage' `
+                                     -ErrorAction SilentlyContinue)
+    if ($allMessages.Count -eq 0) {
+        $allMessages = @(Get-CimInstance -Namespace 'root\ccm\clientSDK' `
+                                         -ClassName  'CCM_Scheduler_ScheduledMessage' `
+                                         -ErrorAction SilentlyContinue)
+    }
+
+    $totalDetected = $allMessages.Count
+    $availableIds  = @($allMessages | ForEach-Object { $_.ScheduledMessageID })
 
     $actions = @(
         @{ Name="App Deployment Evaluation";   Id="{00000000-0000-0000-0000-000000000121}" },
@@ -124,15 +136,18 @@ $script:SccmCyclesBlock = {
         @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}" }
     )
 
-    # Ciclos que pueden lanzar excepcion COM en clientes sanos (sin despliegues activos,
-    # agente ocupado, WSUS no configurado). Se degradan a WARN para no bloquear el resumen.
     $warnOnException = @(
-        "{00000000-0000-0000-0000-000000000121}",  # App Deployment Evaluation
-        "{00000000-0000-0000-0000-000000000114}"   # SW Update Deployment Eval
+        "{00000000-0000-0000-0000-000000000121}",
+        "{00000000-0000-0000-0000-000000000114}"
     )
 
     $log = @(); $anyError = $false; $anyWarn = $false
     foreach ($a in $actions) {
+        if ($totalDetected -gt 0 -and $a.Id -notin $availableIds) {
+            $log += "$($a.Name)=WARN(no configurado en este cliente)"
+            $anyWarn = $true
+            continue
+        }
         try {
             $rv = [int](Invoke-WmiMethod -Namespace "root\ccm" -Class "SMS_Client" `
                         -Name "TriggerSchedule" -ArgumentList @($a.Id)).ReturnValue
@@ -141,7 +156,6 @@ $script:SccmCyclesBlock = {
         } catch {
             $msg = $_.Exception.Message
             if ($a.Id -in $warnOnException) {
-                # Fallo esperado en este ciclo: no es indicativo de cliente roto
                 $log += "$($a.Name)=WARN($msg)"; $anyWarn = $true
             } else {
                 $log += "$($a.Name)=ERROR($msg)"; $anyError = $true
