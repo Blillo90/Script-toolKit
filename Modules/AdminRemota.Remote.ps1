@@ -101,6 +101,12 @@ function Get-TargetNetworkZone {
 # ── Lanza los ciclos SCCM estandar (scriptblock ejecutado en equipo remoto) ───
 $script:SccmCyclesBlock = {
     try {
+    # Detecta si el scriptblock se ejecuta en una sesion remota (via Invoke-Command).
+    # $PSSenderInfo solo esta definido en sesiones remotas; en local es $null.
+    # Cuando es remota no intentamos enumerar ciclos (inestable via WinRM/CIM);
+    # el disparo directo por ID sigue funcionando y es el unico camino soportado.
+    $isRemoteSession = $null -ne $PSSenderInfo
+
     # Validacion de salud del cliente SCCM (reemplaza la enumeracion no fiable de ciclos).
     # Se reportan tres indicadores independientes:
     #   - SCCM client accessible: CcmExec instalado y Running
@@ -134,6 +140,9 @@ $script:SccmCyclesBlock = {
         "Client health status: $(if ($namespaceOk)     { 'OK' }        else { 'ERROR (root\ccm inaccesible)' })"
         "Policy trigger capability: $(if ($triggerCapable) { 'AVAILABLE' } else { 'UNAVAILABLE' })"
     )
+    if ($isRemoteSession) {
+        $health += "Remote SCCM cycle enumeration is not supported - triggering cycles directly"
+    }
 
     if (-not $triggerCapable) {
         return @{ Status = "ERROR"; Details = ($health -join " | ") }
