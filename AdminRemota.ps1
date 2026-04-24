@@ -314,7 +314,7 @@ $pProg.Controls.Add($btnClear)
 #   5 grupos horizontales: Diagnostico | SCCM/Politicas | Sistema | Usuario | Sensibles
 $actionPanel           = New-Object System.Windows.Forms.Panel
 $actionPanel.Dock      = "Top"
-$actionPanel.Height    = 144
+$actionPanel.Height    = 170
 $actionPanel.BackColor = $bgPanel
 $form.Controls.Add($actionPanel)
 
@@ -335,13 +335,14 @@ $btnSccmCycles = New-FlatButton "  Ciclos SCCM"     4 50 $bw2 24 ([System.Drawin
 foreach ($b in @($btnGpUpdate, $btnSccmCycles)) { $gSccm.Controls.Add($b) }
 
 # ── G3: Sistema (x=392, w=180) ───────────────────────────────────
-$gSistema  = New-GroupPanel "Sistema" 392 180
-$bw3       = 170
-$btnRepair  = New-FlatButton "  DISM + SFC"          4 22 $bw3 24 ([System.Drawing.Color]::FromArgb(130, 80, 0))
-$btnChkdsk  = New-FlatButton "  ChkDsk /r"           4 50 $bw3 24 ([System.Drawing.Color]::FromArgb(150, 60, 0))
-$btnCleanup  = New-FlatButton "  Limpieza temporales" 4 78  $bw3 24 ([System.Drawing.Color]::FromArgb(0, 100, 80))
+$gSistema    = New-GroupPanel "Sistema" 392 180 162
+$bw3         = 170
+$btnRepair   = New-FlatButton "  DISM + SFC"          4  22 $bw3 24 ([System.Drawing.Color]::FromArgb(130, 80, 0))
+$btnChkdsk   = New-FlatButton "  ChkDsk /r"           4  50 $bw3 24 ([System.Drawing.Color]::FromArgb(150, 60, 0))
+$btnCleanup  = New-FlatButton "  Limpieza temporales" 4  78 $bw3 24 ([System.Drawing.Color]::FromArgb(0, 100, 80))
 $btnRobocopy = New-FlatButton "  Copia remota"        4 106 $bw3 24 ([System.Drawing.Color]::FromArgb(0, 90, 130))
-foreach ($b in @($btnRepair, $btnChkdsk, $btnCleanup, $btnRobocopy)) { $gSistema.Controls.Add($b) }
+$btnDrivers  = New-FlatButton "  Drivers del Sistema" 4 134 $bw3 24 ([System.Drawing.Color]::FromArgb(30, 90, 120))
+foreach ($b in @($btnRepair, $btnChkdsk, $btnCleanup, $btnRobocopy, $btnDrivers)) { $gSistema.Controls.Add($b) }
 
 # ── G4: Usuario (x=576, w=170) ───────────────────────────────────
 $gUsuario         = New-GroupPanel "Usuario" 576 170
@@ -522,7 +523,7 @@ $script:lvEquipos.Add_SelectedIndexChanged({
 $script:ActionButtons = @(
     $btnMaster, $btnSoftware, $btnInfo, $btnSccmRepair,
     $btnGpUpdate, $btnSccmCycles,
-    $btnRepair, $btnChkdsk, $btnCleanup,
+    $btnRepair, $btnChkdsk, $btnCleanup, $btnDrivers,
     $btnPerfilazo, $btnPerfilRestore,
     $btnRestart, $btnPing, $btnRobocopy, $btnWinRS
 )
@@ -601,6 +602,16 @@ $btnInfo.Add_Click({
         -StatusMsg  "Obteniendo informacion de '$target'..." `
         -Action     { Invoke-SystemInfo -ComputerName $target } `
         -UseCancel  $false
+    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+})
+
+$btnDrivers.Add_Click({
+    $target = Get-ValidComputer
+    if (-not $target) { return }
+    Invoke-ActionButton -ComputerName $target `
+        -StatusMsg "Obteniendo drivers de '$target'..." `
+        -Action    { Invoke-DriverInfo -ComputerName $target } `
+        -UseCancel $false
     Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
 })
 
