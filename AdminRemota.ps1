@@ -523,7 +523,7 @@ $script:lvEquipos.Add_SelectedIndexChanged({
 $script:ActionButtons = @(
     $btnMaster, $btnSoftware, $btnInfo, $btnSccmRepair,
     $btnGpUpdate, $btnSccmCycles,
-    $btnRepair, $btnChkdsk, $btnCleanup, $btnDrivers,
+    $btnRepair, $btnChkdsk, $btnCleanup,
     $btnPerfilazo, $btnPerfilRestore,
     $btnRestart, $btnPing, $btnRobocopy, $btnWinRS
 )
@@ -608,11 +608,7 @@ $btnInfo.Add_Click({
 $btnDrivers.Add_Click({
     $target = Get-ValidComputer
     if (-not $target) { return }
-    Invoke-ActionButton -ComputerName $target `
-        -StatusMsg "Obteniendo drivers de '$target'..." `
-        -Action    { Invoke-DriverInfo -ComputerName $target } `
-        -UseCancel $false
-    Set-Status "Finalizado" ([System.Drawing.Color]::LightGreen)
+    Show-DriverInfoForm -ComputerName $target
 })
 
 $btnUsb.Add_Click({

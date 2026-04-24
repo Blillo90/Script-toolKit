@@ -807,3 +807,231 @@ function Show-WinRSSession {
     Write-Sep
     Append-Output "" $script:White
 }
+
+# ── Ventana independiente de informacion de drivers ───────────────
+# Abre un formulario con TreeView colapsable por categoria.
+# Llama directamente a Invoke-LocalOrRemote; no bloquea el formulario principal.
+function Show-DriverInfoForm {
+    param([Parameter(Mandatory)][string]$ComputerName)
+
+    $bgForm  = [System.Drawing.Color]::FromArgb(28, 28, 32)
+    $bgBar   = [System.Drawing.Color]::FromArgb(38, 38, 42)
+    $bgTree  = [System.Drawing.Color]::FromArgb(30, 30, 35)
+    $colCyan = [System.Drawing.Color]::FromArgb(0, 190, 255)
+    $colRed  = [System.Drawing.Color]::Tomato
+    $colGrn  = [System.Drawing.Color]::FromArgb(100, 200, 100)
+    $colWht  = [System.Drawing.Color]::FromArgb(220, 220, 220)
+    $colYell = [System.Drawing.Color]::Yellow
+    $colGray = [System.Drawing.Color]::FromArgb(140, 140, 140)
+
+    $catNames = @{
+        'Display'         = 'Grafica / Display'
+        'Net'             = 'Red (Ethernet / WiFi / LAN)'
+        'USB'             = 'USB (Controladores)'
+        'HIDClass'        = 'HID (Entrada: raton, teclado, gamepad)'
+        'Mouse'           = 'Raton'
+        'Keyboard'        = 'Teclado'
+        'Media'           = 'Audio / Multimedia'
+        'AudioEndpoint'   = 'Audio (endpoints)'
+        'HDAUDIO'         = 'Audio HD'
+        'HDC'             = 'Controladora de disco (IDE/ATA)'
+        'SCSIAdapter'     = 'Controladora SCSI / RAID / NVMe'
+        'DiskDrive'       = 'Unidades de disco'
+        'Bluetooth'       = 'Bluetooth'
+        'System'          = 'Sistema / Placa base'
+        'Ports'           = 'Puertos (COM / LPT)'
+        'Printer'         = 'Impresoras'
+        'Battery'         = 'Bateria'
+        'Camera'          = 'Camara / Imaging'
+        'Biometric'       = 'Biometrico (huella dactilar)'
+        'Monitor'         = 'Monitor'
+        'Firmware'        = 'Firmware (UEFI/ACPI)'
+        'SmartCardReader' = 'Lector de tarjetas inteligentes'
+        'SecurityDevices' = 'Seguridad (TPM)'
+        'Processor'       = 'Procesador'
+        'Volume'          = 'Volumenes de disco'
+        'WPD'             = 'Dispositivos portatiles (MTP)'
+        'Sensor'          = 'Sensores'
+        'SoftwareDevice'  = 'Dispositivos de software'
+        'MTD'             = 'Dispositivos MTD'
+        'UCM'             = 'Administrador de conector USB-C'
+    }
+
+    # ── Formulario ───────────────────────────────────────────────
+    $frm = New-Object System.Windows.Forms.Form
+    $frm.Text            = "Drivers del Sistema  -  $ComputerName"
+    $frm.Size            = New-Object System.Drawing.Size(980, 720)
+    $frm.MinimumSize     = New-Object System.Drawing.Size(700, 400)
+    $frm.StartPosition   = "CenterScreen"
+    $frm.BackColor       = $bgForm
+    $frm.ForeColor       = $colWht
+    $frm.FormBorderStyle = "Sizable"
+
+    # ── Barra superior ───────────────────────────────────────────
+    $toolbar           = New-Object System.Windows.Forms.Panel
+    $toolbar.Dock      = "Top"
+    $toolbar.Height    = 36
+    $toolbar.BackColor = $bgBar
+
+    $lblStatus           = New-Object System.Windows.Forms.Label
+    $lblStatus.Text      = "Cargando..."
+    $lblStatus.Location  = New-Object System.Drawing.Point(8, 9)
+    $lblStatus.Size      = New-Object System.Drawing.Size(600, 18)
+    $lblStatus.ForeColor = $colYell
+    $lblStatus.Font      = $fontSmall
+
+    $newBtn = {
+        param([string]$Txt, [int]$X, [System.Drawing.Color]$Clr)
+        $b = New-Object System.Windows.Forms.Button
+        $b.Text      = $Txt
+        $b.Location  = New-Object System.Drawing.Point($X, 5)
+        $b.Size      = New-Object System.Drawing.Size(88, 26)
+        $b.BackColor = $Clr
+        $b.ForeColor = $colWht
+        $b.FlatStyle = "Flat"
+        $b.FlatAppearance.BorderSize  = 1
+        $b.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+        $b.Cursor    = "Hand"
+        $b.Font      = $fontSmall
+        $b.Anchor    = [System.Windows.Forms.AnchorStyles]::Top -bor
+                       [System.Windows.Forms.AnchorStyles]::Right
+        return $b
+    }
+
+    $btnExpandAll   = & $newBtn "Expandir todo"  700 ([System.Drawing.Color]::FromArgb(40, 80, 120))
+    $btnCollapseAll = & $newBtn "Contraer todo"  792 ([System.Drawing.Color]::FromArgb(55, 55, 75))
+    $btnRefresh     = & $newBtn "Actualizar"     884 ([System.Drawing.Color]::FromArgb(40, 100, 60))
+    $toolbar.Controls.AddRange(@($lblStatus, $btnExpandAll, $btnCollapseAll, $btnRefresh))
+
+    # ── TreeView ─────────────────────────────────────────────────
+    $tv               = New-Object System.Windows.Forms.TreeView
+    $tv.Dock          = "Fill"
+    $tv.BackColor     = $bgTree
+    $tv.ForeColor     = $colWht
+    $tv.Font          = New-Object System.Drawing.Font("Consolas", 9)
+    $tv.ShowLines     = $true
+    $tv.ShowRootLines = $true
+    $tv.ShowPlusMinus = $true
+    $tv.HideSelection = $false
+    $tv.FullRowSelect = $true
+    $tv.BorderStyle   = "None"
+
+    # ── Barra inferior ───────────────────────────────────────────
+    $bottomBar           = New-Object System.Windows.Forms.Panel
+    $bottomBar.Dock      = "Bottom"
+    $bottomBar.Height    = 24
+    $bottomBar.BackColor = $bgBar
+    $lblBottom           = New-Object System.Windows.Forms.Label
+    $lblBottom.Dock      = "Fill"
+    $lblBottom.Text      = "Doble-click en un driver para copiar su nombre al portapapeles."
+    $lblBottom.TextAlign = "MiddleLeft"
+    $lblBottom.Padding   = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
+    $lblBottom.ForeColor = $colGray
+    $lblBottom.Font      = $fontSmall
+    $bottomBar.Controls.Add($lblBottom)
+
+    $frm.Controls.Add($tv)
+    $frm.Controls.Add($toolbar)
+    $frm.Controls.Add($bottomBar)
+
+    # ── Carga y pintado del arbol ─────────────────────────────────
+    $loadData = {
+        $tv.Nodes.Clear()
+        $lblStatus.Text      = "Consultando drivers de '$ComputerName'..."
+        $lblStatus.ForeColor = $colYell
+        $btnRefresh.Enabled  = $false
+        [System.Windows.Forms.Application]::DoEvents()
+
+        $data = Invoke-LocalOrRemote -ComputerName $ComputerName -ScriptBlock {
+            $drivers = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+                       Where-Object { $_.DeviceName } |
+                       Sort-Object DeviceClass, DeviceName |
+                       Select-Object DeviceClass, DeviceName, DriverVersion, DriverDate, Manufacturer
+            $problems = @{}
+            Get-PnpDevice -ErrorAction SilentlyContinue |
+                Where-Object { $_.Status -ne 'OK' -and $_.FriendlyName } |
+                ForEach-Object { $problems[$_.FriendlyName] = $_.Status }
+            return @{ Drivers = @($drivers); Problems = $problems }
+        }
+
+        $btnRefresh.Enabled = $true
+
+        if (-not $data) {
+            $lblStatus.Text      = "Sin respuesta de '$ComputerName' (WinRM no disponible o equipo apagado)"
+            $lblStatus.ForeColor = $colRed
+            return
+        }
+
+        $tv.BeginUpdate()
+
+        # Nodo de problemas (expandido por defecto si hay alguno)
+        if ($data.Problems.Count -gt 0) {
+            $nodeP           = New-Object System.Windows.Forms.TreeNode
+            $nodeP.Text      = "! DISPOSITIVOS CON PROBLEMAS  ($($data.Problems.Count))"
+            $nodeP.ForeColor = $colRed
+            foreach ($nm in ($data.Problems.Keys | Sort-Object)) {
+                $c           = New-Object System.Windows.Forms.TreeNode
+                $c.Text      = "  ! $nm  [$($data.Problems[$nm])]"
+                $c.ForeColor = $colRed
+                [void]$nodeP.Nodes.Add($c)
+            }
+            $nodeP.Expand()
+            [void]$tv.Nodes.Add($nodeP)
+        }
+
+        # Un nodo por categoria, colapsado por defecto
+        $grouped = @($data.Drivers) | Group-Object DeviceClass | Sort-Object Name
+        foreach ($grp in $grouped) {
+            $label = if ($catNames.ContainsKey($grp.Name)) { $catNames[$grp.Name] }
+                     elseif ($grp.Name)                     { $grp.Name }
+                     else                                   { 'Sin categoria' }
+
+            $nodeCat           = New-Object System.Windows.Forms.TreeNode
+            $nodeCat.Text      = "$label  ($($grp.Group.Count))"
+            $nodeCat.ForeColor = $colCyan
+
+            foreach ($d in $grp.Group) {
+                $ver  = if ($d.DriverVersion) { $d.DriverVersion } else { '---' }
+                $date = try   { ([datetime]$d.DriverDate).ToString('yyyy-MM-dd') } catch { '???' }
+                $mfr  = if ($d.Manufacturer -and $d.Manufacturer -ne $d.DeviceName) {
+                            "   $($d.Manufacturer)" } else { '' }
+
+                $c           = New-Object System.Windows.Forms.TreeNode
+                $c.Text      = ("{0,-52}  v{1,-22}  {2}{3}" -f $d.DeviceName, $ver, $date, $mfr)
+                $c.ForeColor = if ($data.Problems.ContainsKey($d.DeviceName)) { $colRed } else { $colWht }
+                [void]$nodeCat.Nodes.Add($c)
+            }
+            [void]$tv.Nodes.Add($nodeCat)
+        }
+
+        $tv.EndUpdate()
+
+        $total = @($data.Drivers).Count
+        $nProb = $data.Problems.Count
+        if ($nProb -gt 0) {
+            $lblStatus.Text      = "Total: $total drivers  |  $nProb dispositivo(s) con problemas"
+            $lblStatus.ForeColor = $colRed
+        } else {
+            $lblStatus.Text      = "Total: $total drivers  |  Sin problemas detectados"
+            $lblStatus.ForeColor = $colGrn
+        }
+    }.GetNewClosure()
+
+    # ── Eventos ──────────────────────────────────────────────────
+    $btnExpandAll.Add_Click(  { $tv.ExpandAll()   }.GetNewClosure())
+    $btnCollapseAll.Add_Click({ $tv.CollapseAll() }.GetNewClosure())
+    $btnRefresh.Add_Click($loadData)
+
+    $tv.Add_NodeMouseDoubleClick({
+        param($s, $e)
+        if ($e.Node -and $e.Node.Level -eq 1) {
+            $txt = $e.Node.Text.Trim()
+            [System.Windows.Forms.Clipboard]::SetText($txt)
+            $lblBottom.Text = "Copiado: $txt"
+        }
+    }.GetNewClosure())
+
+    $frm.Add_Shown({ & $loadData }.GetNewClosure())
+    $frm.Show()
+    [System.Windows.Forms.Application]::DoEvents()
+}
