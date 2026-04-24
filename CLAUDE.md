@@ -41,6 +41,21 @@ Modules/
 masterParaRevision.txt       # Script monolitico pre-modularizacion (referencia historica)
 ```
 
+## Versión de la herramienta
+
+La versión está declarada en el bloque de cabecera de `AdminRemota.ps1`:
+
+```powershell
+.VERSION
+    2.17.1
+```
+
+**Actualizar la versión con cada cambio relevante** (nueva funcionalidad o fix visible para el usuario).
+El número aparece también en la pantalla de inicio de la GUI (`Herramienta de Administracion Remota v2.17.1`),
+que lo lee directamente de ese mismo campo.
+
+---
+
 ## Patrones clave
 
 - Botones nuevos: `New-FlatButton` → añadir a `$script:ActionButtons` si deben bloquearse durante tareas
