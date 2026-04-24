@@ -319,7 +319,7 @@ $actionPanel.BackColor = $bgPanel
 $form.Controls.Add($actionPanel)
 
 # ── G1: Diagnostico (x=4, w=215) ─────────────────────────────────
-$gDiag = New-GroupPanel "Diagnostico" 4 215
+$gDiag = New-GroupPanel "Diagnostico" 4 215 162
 $bw1   = 205
 $btnMaster     = New-FlatButton "  Masterizacion"     4  22 $bw1 24 $accent
 $btnSoftware   = New-FlatButton "  Software SCCM"     4  50 $bw1 24 $accent
@@ -328,7 +328,7 @@ $btnSccmRepair = New-FlatButton "  SCCM Repair"       4 106 $bw1 24 ([System.Dra
 foreach ($b in @($btnMaster, $btnSoftware, $btnInfo, $btnSccmRepair)) { $gDiag.Controls.Add($b) }
 
 # ── G2: SCCM / Politicas (x=223, w=165) ──────────────────────────
-$gSccm         = New-GroupPanel "SCCM / Politicas" 223 165
+$gSccm         = New-GroupPanel "SCCM / Politicas" 223 165 162
 $bw2           = 155
 $btnGpUpdate   = New-FlatButton "  GPUpdate /force" 4 22 $bw2 24 ([System.Drawing.Color]::FromArgb(0, 90, 160))
 $btnSccmCycles = New-FlatButton "  Ciclos SCCM"     4 50 $bw2 24 ([System.Drawing.Color]::FromArgb(0, 90, 160))
@@ -345,14 +345,14 @@ $btnDrivers  = New-FlatButton "  Drivers del Sistema" 4 134 $bw3 24 ([System.Dra
 foreach ($b in @($btnRepair, $btnChkdsk, $btnCleanup, $btnRobocopy, $btnDrivers)) { $gSistema.Controls.Add($b) }
 
 # ── G4: Usuario (x=576, w=170) ───────────────────────────────────
-$gUsuario         = New-GroupPanel "Usuario" 576 170
+$gUsuario         = New-GroupPanel "Usuario" 576 170 162
 $bw4              = 160
 $btnPerfilazo     = New-FlatButton "  Perfilazo"           4 22 $bw4 24 $accent
 $btnPerfilRestore = New-FlatButton "  Restaurar Perfilazo" 4 50 $bw4 24 ([System.Drawing.Color]::FromArgb(0, 80, 140))
 foreach ($b in @($btnPerfilazo, $btnPerfilRestore)) { $gUsuario.Controls.Add($b) }
 
 # ── G5: Sensibles (x=750, w=155) ─────────────────────────────────
-$gSensibles = New-GroupPanel "Sensibles" 750 155
+$gSensibles = New-GroupPanel "Sensibles" 750 155 162
 $bw5        = 145
 $btnRestart = New-FlatButton "  Reiniciar"   4 22 $bw5 24 ([System.Drawing.Color]::FromArgb(160, 80, 0))
 $btnUsb     = New-FlatButton "  Borrar USB"  4 50 $bw5 24 $btnRed
