@@ -499,40 +499,51 @@ function Invoke-SccmRepair {
         } else {
             Write-Ok   "  ccmrepair.exe localizado."
             Write-Info "[1/2] Ejecutando ccmrepair.exe en '$ComputerName'..."
-            Write-Info "  Espera - puede tardar 1-3 minutos..."
+            Write-Info "  Puede tardar entre 1 y 15 minutos segun el estado del cliente."
+            Write-Info "  La GUI sigue respondiendo; cada 30 s se muestra cuanto llevamos."
+            Set-Progress 0 "ccmrepair en curso..."
             Set-Status "ccmrepair en curso en '$ComputerName'..." ([System.Drawing.Color]::Yellow)
             [System.Windows.Forms.Application]::DoEvents()
 
-            $repairResult = $null
-            try {
-                # ccmrepair es sincrono: esperar hasta 5 minutos antes de timeout
-                $sessOpt = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 300000
-                $repairResult = Invoke-Command -ComputerName $ComputerName `
-                    -SessionOption $sessOpt -ErrorAction Stop -ScriptBlock {
-                        try {
-                            $proc = Start-Process -FilePath 'C:\Windows\CCM\ccmrepair.exe' `
-                                                  -Wait -PassThru -ErrorAction Stop
-                            return @{ ExitCode = $proc.ExitCode; Error = $null }
-                        } catch {
-                            return @{ ExitCode = -1; Error = $_.Exception.Message }
+            $jobRepair = Start-Job -ArgumentList $ComputerName -ScriptBlock {
+                param($computer)
+                try {
+                    $res = Invoke-Command -ComputerName $computer -ErrorAction SilentlyContinue `
+                        -SessionOption (New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 900000) `
+                        -ScriptBlock {
+                            try {
+                                $proc = Start-Process -FilePath 'C:\Windows\CCM\ccmrepair.exe' `
+                                                      -Wait -PassThru -ErrorAction Stop
+                                return @{ ExitCode = $proc.ExitCode; Error = $null }
+                            } catch {
+                                return @{ ExitCode = -1; Error = $_.Exception.Message }
+                            }
                         }
-                    }
-            } catch {
-                Write-Fail "Error al ejecutar ccmrepair remotamente: $($_.Exception.Message)"
-                if ($zone -eq 'VPN') {
-                    Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall."
+                    return $res
+                } catch {
+                    return @{ ExitCode = -1; Error = $_.Exception.Message }
                 }
             }
 
-            if ($repairResult) {
-                if ($repairResult.Error) {
+            $okRepair = Wait-JobWithEvents $jobRepair -TimeoutMinutes 15 `
+                            -ProgressLabel "ccmrepair" -ProgressFrom 0 -ProgressTo 90
+
+            $repairResult = $null
+            if (-not $okRepair) {
+                Write-Fail "[1/2] ccmrepair TIMEOUT (>15 min) en '$ComputerName'."
+                Write-Info "  El proceso puede seguir ejecutandose en el equipo remoto."
+                Write-Info "  Comprueba el log en: C:\Windows\CCM\Logs\ccmrepair.log"
+                Set-Progress 0 "ccmrepair timeout"
+                Set-Status "ccmrepair TIMEOUT en '$ComputerName'" ([System.Drawing.Color]::Orange)
+            } else {
+                $repairResult = Receive-Job $jobRepair
+                if ($repairResult -and $repairResult.Error) {
                     Write-Fail "ccmrepair fallo: $($repairResult.Error)"
+                    if ($zone -eq 'VPN') { Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall." }
                     Set-Status "ccmrepair ERROR en '$ComputerName'" ([System.Drawing.Color]::Tomato)
-                } elseif ($repairResult.ExitCode -eq 0) {
+                } elseif ($repairResult -and $repairResult.ExitCode -eq 0) {
                     Write-Ok  "[1/2] ccmrepair completado correctamente. ExitCode=0"
                     Set-Status "ccmrepair OK en '$ComputerName'" ([System.Drawing.Color]::LightGreen)
-                    # Validar resultado por log remoto (tail corto; no se vuelca el log completo)
-                    # Log tipico: C:\Windows\CCM\Logs\ccmrepair.log (formato CMTrace)
                     $logR = Get-RemoteLogSuccessLine -ComputerName $ComputerName `
                                 -LogPath       'C:\Windows\CCM\Logs\ccmrepair.log' `
                                 -SuccessPattern 'repair.*succeed|succeeded|CcmRepair.*complet|Repair.*complet' `
@@ -540,12 +551,18 @@ function Invoke-SccmRepair {
                     if     ($logR.Found)  { Write-Ok   "  Log ccmrepair: $($logR.Line)" }
                     elseif ($logR.Source) { Write-Warn "  Log ccmrepair: sin linea concluyente ($($logR.Details))." }
                     else                  { Write-Warn "  Log ccmrepair: $($logR.Details)" }
-                } else {
+                } elseif ($repairResult) {
                     Write-Warn "[1/2] ccmrepair finalizo con ExitCode=$($repairResult.ExitCode)."
                     Write-Info "  ExitCode distinto de 0 puede indicar reinicio pendiente o aviso menor."
                     Set-Status "ccmrepair WARN en '$ComputerName'" ([System.Drawing.Color]::Yellow)
+                } else {
+                    Write-Fail "[1/2] Sin respuesta remota tras ccmrepair. Verifica WinRM con '$ComputerName'."
+                    if ($zone -eq 'VPN') { Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall." }
+                    Set-Status "ccmrepair sin respuesta" ([System.Drawing.Color]::Tomato)
                 }
             }
+            Remove-Job $jobRepair -Force -ErrorAction SilentlyContinue
+            Set-Progress 0 ""
         }
         Append-Output "" $script:White
     }

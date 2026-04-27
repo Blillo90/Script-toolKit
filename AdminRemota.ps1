@@ -13,7 +13,7 @@
 .COMPANYNAME
     Accenture
 .VERSION
-    2.17.1
+    2.17.2
 #>
 
 [CmdletBinding()]
