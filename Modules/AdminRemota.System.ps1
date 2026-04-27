@@ -499,12 +499,25 @@ function Invoke-SccmRepair {
         } else {
             Write-Ok   "  ccmrepair.exe localizado."
             Write-Info "[1/2] Ejecutando ccmrepair.exe en '$ComputerName'..."
-            Write-Info "  Puede tardar entre 1 y 15 minutos segun el estado del cliente."
-            Write-Info "  La GUI sigue respondiendo; cada 30 s se muestra cuanto llevamos."
+            Write-Info "  Timeout maximo: 15 min. Log remoto cada 10 s en consola."
             Set-Progress 0 "ccmrepair en curso..."
             Set-Status "ccmrepair en curso en '$ComputerName'..." ([System.Drawing.Color]::Yellow)
             [System.Windows.Forms.Application]::DoEvents()
 
+            # Numero de lineas ya existentes en el log antes de lanzar (puede no existir aun)
+            $repairLog  = 'C:\Windows\CCM\Logs\ccmrepair.log'
+            $linesShown = 0
+            $initCount  = Invoke-LocalOrRemote -ComputerName $ComputerName `
+                              -ArgumentList $repairLog -ScriptBlock {
+                                  param($p)
+                                  $c = Get-Content $p -ErrorAction SilentlyContinue
+                                  return if ($c) { @($c).Count } else { 0 }
+                              }
+            if ($initCount -is [int] -or $initCount -is [long]) { $linesShown = [int]$initCount }
+
+            $colLog = [System.Drawing.Color]::FromArgb(170, 170, 170)
+
+            # Lanzar ccmrepair en background job
             $jobRepair = Start-Job -ArgumentList $ComputerName -ScriptBlock {
                 param($computer)
                 try {
@@ -525,14 +538,66 @@ function Invoke-SccmRepair {
                 }
             }
 
-            $okRepair = Wait-JobWithEvents $jobRepair -TimeoutMinutes 15 `
-                            -ProgressLabel "ccmrepair" -ProgressFrom 0 -ProgressTo 90
+            # Bucle de espera: GUI viva + log remoto cada 10 s + ping cada 30 s
+            $deadline  = (Get-Date).AddMinutes(15)
+            $started   = Get-Date
+            $lastPing  = $started
+            $lastPoll  = [datetime]::MinValue
+
+            while ($jobRepair.State -eq 'Running' -and (Get-Date) -lt $deadline) {
+                Start-Sleep -Milliseconds 500
+                [System.Windows.Forms.Application]::DoEvents()
+                $now = Get-Date
+
+                # Ping de progreso cada 30 s
+                if (($now - $lastPing).TotalSeconds -ge 30) {
+                    $elapsed = [int]($now - $started).TotalSeconds
+                    Write-Info ("  ... ccmrepair en progreso ({0}s)..." -f $elapsed)
+                    $script:outputBox.Update()
+                    $lastPing = $now
+                }
+
+                # Polling del log cada 10 s
+                if (($now - $lastPoll).TotalSeconds -ge 10) {
+                    $snap     = $linesShown
+                    $newLines = Invoke-LocalOrRemote -ComputerName $ComputerName `
+                                    -ArgumentList $repairLog, $snap -ScriptBlock {
+                                        param($p, $skip)
+                                        $all = Get-Content $p -ErrorAction SilentlyContinue
+                                        if (-not $all) { return @() }
+                                        $arr = @($all)
+                                        if ($arr.Count -le $skip) { return @() }
+                                        # Max 40 lineas nuevas por poll para no inundar la GUI
+                                        $end = [Math]::Min($arr.Count - 1, $skip + 39)
+                                        return $arr[$skip..$end]
+                                    }
+                    foreach ($raw in @($newLines)) {
+                        $msg = if ($raw -match '\[LOG\[(.*?)\]LOG\]') { $matches[1].Trim() }
+                               else                                    { $raw.Trim() }
+                        if ($msg) {
+                            $col = if ($msg -match '(?i)error|fail|exception') { [System.Drawing.Color]::Tomato  }
+                                   elseif ($msg -match '(?i)warn')             { [System.Drawing.Color]::Yellow  }
+                                   else                                        { $colLog }
+                            Append-Output "    [log] $msg" $col
+                        }
+                        $linesShown++
+                    }
+                    $lastPoll = $now
+                }
+
+                # Barra de progreso interpolada (easing)
+                if ($script:progressBar) {
+                    $frac = [Math]::Min(0.92, ($now - $started).TotalMinutes / 15)
+                    $val  = [int](90 * (1.0 - [Math]::Pow(1.0 - $frac, 2)))
+                    if ($script:progressBar.Value -ne $val) { $script:progressBar.Value = $val }
+                }
+            }
 
             $repairResult = $null
-            if (-not $okRepair) {
+            if ($jobRepair.State -eq 'Running') {
+                Stop-Job $jobRepair
                 Write-Fail "[1/2] ccmrepair TIMEOUT (>15 min) en '$ComputerName'."
-                Write-Info "  El proceso puede seguir ejecutandose en el equipo remoto."
-                Write-Info "  Comprueba el log en: C:\Windows\CCM\Logs\ccmrepair.log"
+                Write-Info "  El proceso puede seguir en el equipo. Log: $repairLog"
                 Set-Progress 0 "ccmrepair timeout"
                 Set-Status "ccmrepair TIMEOUT en '$ComputerName'" ([System.Drawing.Color]::Orange)
             } else {
@@ -544,19 +609,11 @@ function Invoke-SccmRepair {
                 } elseif ($repairResult -and $repairResult.ExitCode -eq 0) {
                     Write-Ok  "[1/2] ccmrepair completado correctamente. ExitCode=0"
                     Set-Status "ccmrepair OK en '$ComputerName'" ([System.Drawing.Color]::LightGreen)
-                    $logR = Get-RemoteLogSuccessLine -ComputerName $ComputerName `
-                                -LogPath       'C:\Windows\CCM\Logs\ccmrepair.log' `
-                                -SuccessPattern 'repair.*succeed|succeeded|CcmRepair.*complet|Repair.*complet' `
-                                -TailLines     100
-                    if     ($logR.Found)  { Write-Ok   "  Log ccmrepair: $($logR.Line)" }
-                    elseif ($logR.Source) { Write-Warn "  Log ccmrepair: sin linea concluyente ($($logR.Details))." }
-                    else                  { Write-Warn "  Log ccmrepair: $($logR.Details)" }
                 } elseif ($repairResult) {
-                    Write-Warn "[1/2] ccmrepair finalizo con ExitCode=$($repairResult.ExitCode)."
-                    Write-Info "  ExitCode distinto de 0 puede indicar reinicio pendiente o aviso menor."
+                    Write-Warn "[1/2] ccmrepair ExitCode=$($repairResult.ExitCode) (puede indicar reinicio pendiente)."
                     Set-Status "ccmrepair WARN en '$ComputerName'" ([System.Drawing.Color]::Yellow)
                 } else {
-                    Write-Fail "[1/2] Sin respuesta remota tras ccmrepair. Verifica WinRM con '$ComputerName'."
+                    Write-Fail "[1/2] Sin respuesta remota. Verifica WinRM con '$ComputerName'."
                     if ($zone -eq 'VPN') { Write-Info "  Causa probable: WinRM bloqueado por VPN/firewall." }
                     Set-Status "ccmrepair sin respuesta" ([System.Drawing.Color]::Tomato)
                 }
