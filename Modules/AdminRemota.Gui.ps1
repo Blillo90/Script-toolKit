@@ -524,26 +524,28 @@ function Update-EquipoCard {
     # 1. Resolver IP: solo para display y clasificacion VPN/CABLE
     $freshIP = Resolve-FreshIP $hostname
     # 2. Ping SIEMPRE por hostname, nunca por IP.
-    #    Pingar directamente la IP puede fallar si hay firewall ICMP en ese segmento,
-    #    mientras que el hostname usa el routing completo del OS (igual que Test-Connection interno).
     $online  = Test-Connection -ComputerName $hostname -Count 1 -Quiet -ErrorAction SilentlyContinue
     if ($online) {
         $tipo                  = if ($freshIP -and ($freshIP.StartsWith("10.142.") -or $freshIP.StartsWith("10.99."))) { "VPN" } else { "CABLE" }
         $ipStr                 = if ($freshIP) { $freshIP } else { "?" }
         $item.SubItems[0].Text = "ONLINE"
-        $item.ForeColor        = [System.Drawing.Color]::LightGreen
         $item.ToolTipText      = "$hostname  |  $tipo  |  $ipStr"
     } elseif ($freshIP) {
-        # DNS resolvio pero ICMP no responde
         $item.SubItems[0].Text = "PING_FAIL"
-        $item.ForeColor        = [System.Drawing.Color]::Orange
         $item.ToolTipText      = "$hostname  |  PING_FAIL  |  $freshIP"
     } else {
-        # No resuelve y no responde al ping
         $item.SubItems[0].Text = "DNS_FAIL"
-        $item.ForeColor        = [System.Drawing.Color]::OrangeRed
         $item.ToolTipText      = "$hostname  |  no resuelve (DNS_FAIL)"
     }
+    # ForeColor: Mast tiene prioridad sobre conectividad.
+    # Solo se usa el color de conectividad si no hay Mast registrado.
+    $mast = if ($script:MastStatus.ContainsKey($hostname)) { $script:MastStatus[$hostname] } else { $null }
+    $item.ForeColor = if     ($mast -eq 'OK')       { [System.Drawing.Color]::LightGreen  }
+                      elseif ($mast -eq 'Error')     { [System.Drawing.Color]::Tomato      }
+                      elseif ($mast -eq 'Pendiente') { [System.Drawing.Color]::Yellow      }
+                      elseif ($online)               { [System.Drawing.Color]::LightGreen  }
+                      elseif ($freshIP)              { [System.Drawing.Color]::Orange      }
+                      else                           { [System.Drawing.Color]::OrangeRed   }
     [System.Windows.Forms.Application]::DoEvents()
 }
 
@@ -551,6 +553,7 @@ function Refresh-EquipoEstados {
     foreach ($item in @($script:lvEquipos.Items)) {
         if ($item.Tag) { Update-EquipoCard $item }
     }
+    $script:lvEquipos.Refresh()
 }
 
 function Save-EquipoList {

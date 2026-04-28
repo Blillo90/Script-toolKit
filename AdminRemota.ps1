@@ -552,18 +552,40 @@ $btnPing.Add_Click({
         Set-Status "  '$computer' ONLINE  |  $tipo  |  $ipStr" ([System.Drawing.Color]::LightGreen)
         Write-Ok "Ping OK -> '$computer' | Tipo: $tipo | IP: $ipStr"
     } elseif ($freshIP) {
-        # DNS resolvio pero ICMP no responde: PING_FAIL con IP visible
         $lblPingResult.Text      = "PING_FAIL  |  $freshIP"
         $lblPingResult.ForeColor = [System.Drawing.Color]::Orange
         Set-Status "  '$computer' PING_FAIL  |  $freshIP" ([System.Drawing.Color]::Orange)
         Write-Warn "Ping FAIL -> '$computer' resuelve a $freshIP pero no responde al ping."
     } else {
-        # No resuelve y no responde: DNS_FAIL
         $lblPingResult.Text      = "DNS_FAIL"
         $lblPingResult.ForeColor = [System.Drawing.Color]::Tomato
         Set-Status "  '$computer' DNS_FAIL (no resuelve y no responde)" ([System.Drawing.Color]::Tomato)
         Write-Fail "DNS FAIL -> '$computer' no resuelve y no responde al ping."
     }
+
+    # Actualizar el item del ListView si el equipo esta en seguimiento
+    $lvItem = $script:lvEquipos.Items | Where-Object { $_.Tag -eq $computer } | Select-Object -First 1
+    if ($lvItem) {
+        if ($online) {
+            $lvItem.SubItems[0].Text = "ONLINE"
+            $lvItem.ToolTipText      = "$computer  |  $tipo  |  $ipStr"
+        } elseif ($freshIP) {
+            $lvItem.SubItems[0].Text = "PING_FAIL"
+            $lvItem.ToolTipText      = "$computer  |  PING_FAIL  |  $freshIP"
+        } else {
+            $lvItem.SubItems[0].Text = "DNS_FAIL"
+            $lvItem.ToolTipText      = "$computer  |  no resuelve (DNS_FAIL)"
+        }
+        $mast = if ($script:MastStatus.ContainsKey($computer)) { $script:MastStatus[$computer] } else { $null }
+        $lvItem.ForeColor = if     ($mast -eq 'OK')       { [System.Drawing.Color]::LightGreen }
+                            elseif ($mast -eq 'Error')     { [System.Drawing.Color]::Tomato     }
+                            elseif ($mast -eq 'Pendiente') { [System.Drawing.Color]::Yellow     }
+                            elseif ($online)               { [System.Drawing.Color]::LightGreen }
+                            elseif ($freshIP)              { [System.Drawing.Color]::Orange     }
+                            else                           { [System.Drawing.Color]::OrangeRed  }
+        $script:lvEquipos.Refresh()
+    }
+
     Write-Sep
     Append-Output "" $white
 })
