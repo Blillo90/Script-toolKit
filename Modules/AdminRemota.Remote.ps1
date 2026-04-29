@@ -132,7 +132,6 @@ $script:SccmCyclesBlock = {
             @{ Name="Hardware Inventory";          Id="{00000000-0000-0000-0000-000000000001}"; SoftFail=$false },
             @{ Name="Machine Policy Retrieval";    Id="{00000000-0000-0000-0000-000000000021}"; SoftFail=$false },
             @{ Name="Machine Policy Evaluation";   Id="{00000000-0000-0000-0000-000000000022}"; SoftFail=$false },
-            @{ Name="User Policy Retrieval";       Id="{00000000-0000-0000-0000-000000000027}"; SoftFail=$true  },
             @{ Name="Software Inventory";          Id="{00000000-0000-0000-0000-000000000002}"; SoftFail=$false },
             @{ Name="SW Update Deployment Eval";   Id="{00000000-0000-0000-0000-000000000114}"; SoftFail=$true  },
             @{ Name="Software Update Scan";        Id="{00000000-0000-0000-0000-000000000113}"; SoftFail=$false },
