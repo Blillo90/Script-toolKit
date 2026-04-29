@@ -133,7 +133,20 @@ function Invoke-MasterCheck {
 
     # Step 4: Ciclos SCCM
     Invoke-Step -Name "SCCM Client Cycles" -ScriptBlock {
-        Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock $script:SccmCyclesBlock
+        $res = Invoke-LocalOrRemote -ComputerName $script:Target -ScriptBlock $script:SccmCyclesBlock
+        if ($res -and $res.Details) {
+            foreach ($entry in ($res.Details -split '\s*\|\s*')) {
+                $e = $entry.Trim()
+                if (-not $e) { continue }
+                $col = if     ($e -match '=OK')    { [System.Drawing.Color]::LightGreen }
+                       elseif ($e -match 'ERROR')  { [System.Drawing.Color]::Tomato     }
+                       elseif ($e -match 'WARN')   { [System.Drawing.Color]::Yellow     }
+                       else                        { [System.Drawing.Color]::White       }
+                Append-Output "    $e" $col
+            }
+        }
+        if ($res) { return @{ Status=$res.Status; Details="" } }
+        return $res
     }
 
     # Step 5: Centro de Software
