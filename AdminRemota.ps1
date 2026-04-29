@@ -698,14 +698,18 @@ $btnSccmCycles.Add_Click({
             $result = Invoke-LocalOrRemote -ComputerName $target -ScriptBlock $script:SccmCyclesBlock
             Write-Sep; Append-Output "" $script:White
             if ($result) {
-                switch ($result.Status) {
-                    "OK"    { Write-Ok   "Ciclos completados: $($result.Details)"
-                              Set-Status "Ciclos SCCM OK en '$target'" ([System.Drawing.Color]::LightGreen) }
-                    "WARN"  { Write-Warn "Ciclos con avisos: $($result.Details)"
-                              Set-Status "Ciclos SCCM WARN en '$target'" ([System.Drawing.Color]::Yellow) }
-                    "ERROR" { Write-Fail "Ciclos con errores: $($result.Details)"
-                              Set-Status "Error en ciclos SCCM" ([System.Drawing.Color]::Tomato) }
+                if ($result.Steps) { Write-StepList $result.Steps }
+                $statusTxt = switch ($result.Status) {
+                    "OK"    { "Ciclos completados OK" }
+                    "WARN"  { "Ciclos con avisos"     }
+                    default { "Ciclos con errores"    }
                 }
+                $statusCol = switch ($result.Status) {
+                    "OK"    { [System.Drawing.Color]::LightGreen }
+                    "WARN"  { [System.Drawing.Color]::Yellow     }
+                    default { [System.Drawing.Color]::Tomato     }
+                }
+                Set-Status "$statusTxt en '$target'" $statusCol
             } else {
                 Write-Warn "Sin respuesta del cliente SCCM. Verifica que CcmExec esta activo."
                 Set-Status "Sin respuesta SCCM en '$target'" ([System.Drawing.Color]::Yellow)
