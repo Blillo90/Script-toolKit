@@ -144,8 +144,10 @@ $script:SccmCyclesBlock = {
 
         foreach ($t in $targets) {
             try {
-                $rv = [int](Invoke-WmiMethod -Namespace "root\ccm" -Class "SMS_Client" `
-                            -Name "TriggerSchedule" -ArgumentList @($t.Id)).ReturnValue
+                $wmiResult = Invoke-WmiMethod -Namespace "root\ccm" -Class "SMS_Client" `
+                                 -Name "TriggerSchedule" -ArgumentList @($t.Id) -ErrorAction Stop
+                if (-not $wmiResult) { throw "TriggerSchedule devolvio resultado nulo" }
+                $rv = [int]$wmiResult.ReturnValue
                 if ($rv -eq 0) { $log += "$($t.Name)=OK" }
                 else            { $log += "$($t.Name)=WARN(rv=$rv)"; $anyWarn = $true }
             } catch {
