@@ -139,7 +139,8 @@ $script:SccmCyclesBlock = {
             @{ Name="State Message Refresh";       Id="{00000000-0000-0000-0000-000000000111}"; SoftFail=$false }
         )
 
-        $log = @()
+        $log      = @()
+        $steps    = @()
         $anyError = $false; $anyWarn = $false
 
         foreach ($t in $targets) {
@@ -148,20 +149,27 @@ $script:SccmCyclesBlock = {
                                  -Name "TriggerSchedule" -ArgumentList @($t.Id) -ErrorAction Stop
                 if (-not $wmiResult) { throw "TriggerSchedule devolvio resultado nulo" }
                 $rv = [int]$wmiResult.ReturnValue
-                if ($rv -eq 0) { $log += "$($t.Name)=OK" }
-                else            { $log += "$($t.Name)=WARN(rv=$rv)"; $anyWarn = $true }
+                if ($rv -eq 0) {
+                    $log   += "$($t.Name)=OK"
+                    $steps += @{ Name=$t.Name; Status="OK";   Details="rv=0" }
+                } else {
+                    $log   += "$($t.Name)=WARN(rv=$rv)"; $anyWarn = $true
+                    $steps += @{ Name=$t.Name; Status="WARN"; Details="rv=$rv" }
+                }
             } catch {
                 $msg = $_.Exception.Message
                 if ($t.SoftFail) {
-                    $log += "$($t.Name)=WARN($msg)"; $anyWarn = $true
+                    $log   += "$($t.Name)=WARN($msg)"; $anyWarn = $true
+                    $steps += @{ Name=$t.Name; Status="WARN"; Details=$msg }
                 } else {
-                    $log += "$($t.Name)=ERROR($msg)"; $anyError = $true
+                    $log   += "$($t.Name)=ERROR($msg)"; $anyError = $true
+                    $steps += @{ Name=$t.Name; Status="ERROR"; Details=$msg }
                 }
             }
         }
 
         $s = if ($anyError) { "ERROR" } elseif ($anyWarn) { "WARN" } else { "OK" }
-        return @{ Status=$s; Details=($log -join " | ") }
+        return @{ Status=$s; Details=($log -join " | "); Steps=$steps }
     } catch {
         return @{ Status="ERROR"; Details="Excepcion inesperada en SccmCyclesBlock: $($_.Exception.Message)" }
     }
